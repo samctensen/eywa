@@ -15,7 +15,7 @@ const USAGE: &str = "usage:
   eywa serve
   eywa status [--json] [--requests] [--path <path>] [--depth <n>]
   eywa watch [--json] [--requests] [--path <path>] [--depth <n>]
-  eywa visualize
+  eywa top
   eywa hook <claude|codex|grok|muse>
   eywa --version";
 
@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         Some("serve") if args.len() == 1 => serve(),
         Some("status") => query("get", &args[1..]),
         Some("watch") => query("subscribe", &args[1..]),
-        Some("visualize") if args.len() == 1 => visualize(),
+        Some("top") if args.len() == 1 => top(),
         Some("--version" | "-V") => {
             println!("eywa {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -305,11 +305,11 @@ fn query(op: &str, flags: &[String]) -> ExitCode {
 }
 
 /// Draws a live view of every agent until Ctrl-C.
-fn visualize() -> ExitCode {
+fn top() -> ExitCode {
     let Some(stream) = connect() else {
         return ExitCode::FAILURE;
     };
-    match eywa::visualize::run(stream) {
+    match eywa::top::run(stream) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("eywa: {error}");

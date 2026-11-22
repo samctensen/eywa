@@ -1,4 +1,4 @@
-//! `eywa visualize`: a live view of every agent Eywa can see, redrawn in the
+//! `eywa top`: a live view of every agent Eywa can see, redrawn in the
 //! terminal as it changes.
 
 use crate::tree::Millis;

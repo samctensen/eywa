@@ -433,7 +433,7 @@ fn claude_session_file_drives_state() {
 /// and then the latest, and expands sessions at work down to the request
 /// that's waiting.
 #[test]
-fn visualize_draws_the_tree() {
+fn top_draws_the_tree() {
     let row = |id: &str, kind: &str, state: &str, attrs: serde_json::Value| {
         let row = json!({"id": id, "kind": kind, "state": state,
                          "since": "2026-11-18T20:00:00.000Z", "attrs": attrs});
@@ -479,7 +479,7 @@ fn visualize_draws_the_tree() {
         row("/codex", "client", "idle", json!({})),
     ]
     .into_iter()
-    .collect::<eywa::visualize::Rows>();
+    .collect::<eywa::top::Rows>();
     rows.get_mut("/claude/session:s5").unwrap()["since"] = json!("2026-11-18T20:01:00.000Z");
     let now = humantime::parse_rfc3339("2026-11-18T20:02:05Z").unwrap();
     let now = now
@@ -490,7 +490,7 @@ fn visualize_draws_the_tree() {
     let render = |width| {
         let mut plain = String::new();
         let mut escape = false;
-        for c in eywa::visualize::render(&rows, now, width).chars() {
+        for c in eywa::top::render(&rows, now, width).chars() {
             match (escape, c) {
                 (false, '\x1b') => escape = true,
                 (true, 'm') => escape = false,
