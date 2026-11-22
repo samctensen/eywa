@@ -474,7 +474,7 @@ fn visualize_draws_the_tree() {
             "/claude/session:s5",
             "session",
             "idle",
-            json!({"cwd": "/src/lander"}),
+            json!({"cwd": "/src/lander-with-a-long-folder-name"}),
         ),
         row("/codex", "client", "idle", json!({})),
     ]
@@ -487,23 +487,33 @@ fn visualize_draws_the_tree() {
         .unwrap()
         .as_millis() as u64;
 
-    let screen = eywa::visualize::render(&rows, now, 60);
-    let mut plain = String::new();
-    let mut escape = false;
-    for c in screen.chars() {
-        match (escape, c) {
-            (false, '\x1b') => escape = true,
-            (true, 'm') => escape = false,
-            (false, c) => plain.push(c),
-            _ => {}
+    let render = |width| {
+        let mut plain = String::new();
+        let mut escape = false;
+        for c in eywa::visualize::render(&rows, now, width).chars() {
+            match (escape, c) {
+                (false, '\x1b') => escape = true,
+                (true, 'm') => escape = false,
+                (false, c) => plain.push(c),
+                _ => {}
+            }
         }
-    }
+        plain
+    };
+    let plain = render(60);
     let lines: Vec<&str> = plain.lines().collect();
     let line = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap();
+    // The column, in characters, where `word` starts on the line with `text`.
+    let column = |text: &str, word: &str| {
+        let line = lines[line(text)];
+        line[..line.find(word).unwrap()].chars().count()
+    };
     assert!(lines[line("eywa ·")].contains("2 sessions"), "{plain}");
+    assert!(lines[line("eywa s9")].ends_with(" 2m 05s"), "{plain}");
     assert!(
-        lines[line("eywa s9")].contains("needs you 2m 05s"),
-        "{plain}"
+        column("eywa s9", "needs you") == column("approval", "needs you")
+            && column("eywa s9", "needs you") == column("lander", "idle"),
+        "states line up down the screen\n{plain}"
     );
     assert!(line("eywa s9") < line("approval") && line("approval") < line("lander"));
     assert!(
@@ -513,4 +523,12 @@ fn visualize_draws_the_tree() {
     assert!(!plain.contains("turn old"), "idle sessions stay collapsed");
     assert!(lines[line("codex")].contains("no sessions"));
     assert!(lines.iter().all(|line| line.chars().count() <= 60));
+
+    let narrow = render(40);
+    let lander = narrow.lines().find(|line| line.contains("lander")).unwrap();
+    assert!(
+        lander.contains("…") && lander.contains("idle") && lander.ends_with("1m 05s"),
+        "a long name gives way to its state\n{narrow}"
+    );
+    assert!(narrow.lines().all(|line| line.chars().count() <= 40));
 }
