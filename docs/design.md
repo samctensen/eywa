@@ -183,9 +183,12 @@ open, so it runs in the adapter inside Eywa.
 
 **Allowed fields:** event name, session id, turn or prompt id, agent id and type,
 tool use id (and the ids in a batch), tool name, notification type, source,
-reason, elicitation id, MCP server name, `StopFailure`'s error code, background
+elicitation id, MCP server name, `StopFailure`'s error code, background
 task ids, types and statuses, `cwd`, the transcript path and the client's
-timestamp. Prompts, responses, commands, tool arguments and tool output never
+timestamp. A `reason` is kept only when it is `channel_closed` or `shutdown`,
+which Grok's `Stop` sends at session end; any other value is dropped, because
+some events put free text there, such as why Claude Code's auto mode denied a
+tool call. Prompts, responses, commands, tool arguments and tool output never
 cross the socket or touch disk. Alongside ids and `cwd`, Eywa publishes tool
 names, subagent types and MCP server names: each on the request or agent it
 describes, and only where the client states it for that node. Eywa never fills

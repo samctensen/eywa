@@ -76,6 +76,11 @@ pub const MUSE_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// The `reason` values that leave the hook: the two Grok's `Stop` sends at
+/// session end, which its adapter acts on. Elsewhere `reason` can be free
+/// text, such as why Claude Code's auto mode denied a tool call.
+pub const KEPT_REASONS: &[&str] = &["channel_closed", "shutdown"];
+
 /// The hook events a client reports, or `None` for a client Eywa doesn't
 /// support.
 pub fn events_of(client: &str) -> Option<&'static [&'static str]> {
@@ -205,7 +210,8 @@ impl HookRecord {
             tool_name,
             notification_type: text(object, &["notification_type", "notificationType"]),
             source: text(object, &["source"]),
-            reason: text(object, &["reason"]),
+            reason: text(object, &["reason"])
+                .filter(|reason| KEPT_REASONS.contains(&reason.as_str())),
             elicitation_id: id(object, "elicitation_id", &["elicitation_id"])?,
             mcp_server: text(object, &["mcp_server_name"]),
             error,
