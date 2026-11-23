@@ -1,4 +1,4 @@
-//! `eywa visualize`: a live view of every agent Eywa can see, redrawn in the
+//! `eywa top`: a live view of every agent Eywa can see, redrawn in the
 //! terminal as it changes.
 
 use crate::tree::Millis;
@@ -7,6 +7,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +23,17 @@ const PLAIN: &str = "";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
+
+/// How wide a row's state and age are together, and the gap before them.
+const STATUS: usize = 18;
+const GAP: usize = 2;
+
+/// Whether to use color at all: not when `NO_COLOR` is set or the terminal
+/// is dumb.
+static COLOR: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+        && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
+});
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -125,15 +137,24 @@ fn insert(rows: &mut Rows, row: Value) {
 /// Draws `rows` as they stand at `now`, each line at most `width` columns.
 pub fn render(rows: &Rows, now: Millis, width: usize) -> String {
     let view = View::new(rows, now);
-    let mut lines = vec![view.header(), Line::default()];
+    let mut entries = vec![Entry::from(view.header()), Entry::default()];
     for client in view.children("/") {
-        view.client(client, &mut lines);
-        lines.push(Line::default());
+        view.client(client, &mut entries);
+        entries.push(Entry::default());
     }
-    lines.push(Line::default().add(DIM, "  ⌃C to quit"));
+    entries.push(Entry::from(Line::default().add(DIM, "  ⌃C to quit")));
+    // States and ages line up down the whole screen, and long names give
+    // way before they push them off the edge.
+    let longest = entries
+        .iter()
+        .filter(|entry| entry.status.is_some())
+        .map(|entry| entry.name.width())
+        .max()
+        .unwrap_or(0);
+    let column = longest.min(width.saturating_sub(STATUS + GAP));
     let mut screen = String::new();
-    for line in lines {
-        line.write(width, &mut screen);
+    for entry in entries {
+        entry.write(column, width, &mut screen);
         screen.push('\n');
     }
     screen
@@ -196,14 +217,14 @@ impl<'a> View<'a> {
                 };
                 line = line
                     .add(PLAIN, "   ")
-                    .add(self.color(state), self.glyph(state))
+                    .add(color(state), self.glyph(state))
                     .add(PLAIN, format!(" {count} {what}"));
             }
         }
         line
     }
 
-    fn client(&self, id: &str, lines: &mut Vec<Line>) {
+    fn client(&self, id: &str, entries: &mut Vec<Entry>) {
         let state = state(&self.rows[id]);
         let sessions = self.children(id);
         let summary = match sessions.len() {
@@ -211,75 +232,62 @@ impl<'a> View<'a> {
             1 => "1 session".to_string(),
             count => format!("{count} sessions"),
         };
-        lines.push(
+        entries.push(Entry::from(
             Line::default()
                 .add(PLAIN, "  ")
-                .add(self.color(state), self.glyph(state))
+                .add(color(state), self.glyph(state))
                 .add(BOLD, format!(" {}", id.trim_start_matches('/')))
                 .add(DIM, format!("  {summary}")),
-        );
-        self.branches(sessions, "  ", lines);
+        ));
+        self.branches(sessions, "  ", entries);
     }
 
     /// Draws `ids` as siblings in the tree, expanding each that isn't idle.
-    fn branches(&self, ids: &[&str], indent: &str, lines: &mut Vec<Line>) {
-        let column = ids
-            .iter()
-            .map(|id| {
-                let (name, detail) = label(id, &self.rows[*id]);
-                name.chars().count() + detail.chars().count()
-            })
-            .max()
-            .unwrap_or(0);
+    fn branches(&self, ids: &[&str], indent: &str, entries: &mut Vec<Entry>) {
         for (index, id) in ids.iter().enumerate() {
             let last = index + 1 == ids.len();
             let row = &self.rows[*id];
             let state = state(row);
             let (name, detail) = label(id, row);
-            let gap = column - name.chars().count() - detail.chars().count() + 2;
-            lines.push(
-                Line::default()
+            entries.push(Entry {
+                name: Line::default()
                     .add(DIM, format!("{indent}{}", if last { "└─ " } else { "├─ " }))
-                    .add(self.color(state), self.glyph(state))
+                    .add(color(state), self.glyph(state))
                     .add(
                         if state == "idle" { DIM } else { PLAIN },
                         format!(" {name}"),
                     )
-                    .add(DIM, detail)
-                    .add(PLAIN, " ".repeat(gap))
-                    .add(self.color(state), word(state))
-                    .add(DIM, format!(" {}", elapsed(row, self.now))),
-            );
+                    .add(DIM, detail),
+                status: Some(
+                    Line::default()
+                        .add(color(state), format!("{:<9}", word(state)))
+                        .add(DIM, format!("  {:>7}", elapsed(row, self.now))),
+                ),
+            });
             if state != "idle" {
                 let indent = format!("{indent}{}", if last { "   " } else { "│  " });
-                self.branches(self.children(id), &indent, lines);
+                self.branches(self.children(id), &indent, entries);
             }
-        }
-    }
-
-    /// Anything waiting on you pulses: bright for half a second, then dim.
-    fn bright(&self) -> bool {
-        (self.frame / 5).is_multiple_of(2)
-    }
-
-    fn color(&self, state: &str) -> &'static str {
-        match state {
-            "needs_input" if self.bright() => "\x1b[1;95m",
-            "needs_input" => "\x1b[35m",
-            "working" => "\x1b[32m",
-            "unknown" => "\x1b[33m",
-            _ => DIM,
         }
     }
 
     fn glyph(&self, state: &str) -> &'static str {
         match state {
-            "needs_input" if self.bright() => "◆",
-            "needs_input" => "◇",
+            "needs_input" => "◆",
             "working" => SPINNER[self.frame % SPINNER.len()],
             "unknown" => "?",
             _ => "○",
         }
+    }
+}
+
+/// What needs you is bold yellow and work is green; everything else is dim.
+/// These are the terminal's own colors, so its theme decides the shades.
+fn color(state: &str) -> &'static str {
+    match state {
+        "needs_input" => "\x1b[1;33m",
+        "working" => "\x1b[32m",
+        _ => DIM,
     }
 }
 
@@ -350,16 +358,23 @@ impl Line {
         self
     }
 
-    /// Writes the line, cut off at `width` columns.
+    /// How many columns the line takes up.
+    fn width(&self) -> usize {
+        self.0.iter().map(|(_, text)| text.chars().count()).sum()
+    }
+
+    /// Writes the line in at most `width` columns, ending in an ellipsis
+    /// where it's cut short.
     fn write(&self, width: usize, out: &mut String) {
-        let mut room = width;
+        let cut = self.width() > width;
+        let mut room = if cut { width.saturating_sub(1) } else { width };
         for (style, text) in &self.0 {
             let shown: String = text.chars().take(room).collect();
             if shown.is_empty() {
                 continue;
             }
             room -= shown.chars().count();
-            if style.is_empty() {
+            if style.is_empty() || !*COLOR {
                 out.push_str(&shown);
             } else {
                 out.push_str(style);
@@ -367,6 +382,37 @@ impl Line {
                 out.push_str(RESET);
             }
         }
+        if cut && width > 0 {
+            out.push('…');
+        }
+    }
+}
+
+/// One line of the screen: a name, and for each agent, its state and age
+/// in columns on the right.
+#[derive(Default)]
+struct Entry {
+    name: Line,
+    status: Option<Line>,
+}
+
+impl From<Line> for Entry {
+    fn from(name: Line) -> Self {
+        Entry { name, status: None }
+    }
+}
+
+impl Entry {
+    /// Writes the entry in `width` columns, its status starting just past
+    /// `column`.
+    fn write(&self, column: usize, width: usize, out: &mut String) {
+        let Some(status) = &self.status else {
+            return self.name.write(width, out);
+        };
+        self.name.write(column, out);
+        let shown = self.name.width().min(column);
+        out.push_str(&" ".repeat(column - shown + GAP));
+        status.write(width.saturating_sub(column + GAP), out);
     }
 }
 
