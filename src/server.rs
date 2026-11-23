@@ -394,7 +394,7 @@ impl Core {
                     .into_iter()
                     .filter(|row| request.selection.includes(&row.id))
                     .collect();
-                let _ = sender.send(snapshot_line(self.rev, &selected));
+                let _ = sender.send(snapshot_line(self.rev, selected));
                 receiver
             }
             Op::Stop => {

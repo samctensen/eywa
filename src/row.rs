@@ -1,36 +1,17 @@
 //! Rows: the published view of each node, and the changes between views.
 
-use crate::tree::{Attrs, Kind, Millis, State, Tree, rfc3339};
-use serde::{Serialize, Serializer};
+use crate::tree::{Attrs, Kind, State, Tree, rfc3339};
+use eywa_api::Reason;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct Row {
-    pub id: String,
-    pub kind: Kind,
-    pub state: State,
-    #[serde(serialize_with = "serialize_time")]
-    pub since: Millis,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cause: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub counts: Option<Counts>,
-    pub attrs: Attrs,
-}
-
-/// Open sessions beneath a machine or client row, in total and by state.
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
-pub struct Counts {
-    pub sessions: u32,
-    pub needs_input: u32,
-    pub working: u32,
-    pub unknown: u32,
-    pub idle: u32,
-}
+pub use eywa_api::{Counts, Row};
 
 #[derive(Clone, Debug, PartialEq)]
+// A change lives only until it is published.
+#[allow(clippy::large_enum_variant)]
 pub enum Change {
     Upsert(Row),
     Remove(String),
@@ -43,10 +24,6 @@ impl Change {
             Change::Remove(id) => id,
         }
     }
-}
-
-fn serialize_time<S: Serializer>(at: &Millis, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&rfc3339(*at))
 }
 
 impl Tree {
@@ -91,8 +68,7 @@ impl Tree {
                 .nodes
                 .get(cause)
                 .and_then(|node| node.attrs.get("reason"))
-                .and_then(|reason| reason.as_str())
-                .map(String::from),
+                .and_then(exactly::<Reason>),
             _ => None,
         };
         let counts = matches!(node.kind, Kind::Machine | Kind::Client).then(|| self.counts(id));
@@ -100,11 +76,11 @@ impl Tree {
             id: id.to_string(),
             kind: node.kind,
             state,
-            since,
+            since: rfc3339(since),
             reason,
             cause,
             counts,
-            attrs: node.attrs.clone(),
+            attrs: published(&node.attrs),
         })
     }
 
@@ -123,5 +99,87 @@ impl Tree {
             }
         }
         counts
+    }
+}
+
+/// A node's attributes as a row publishes them. A documented attribute whose
+/// value the crate's type can't hold exactly, such as a string `pid`, stays
+/// in `other` as it is, so the row is still published and its JSON is the
+/// node's map.
+fn published(map: &Attrs) -> eywa_api::Attrs {
+    let mut attrs = eywa_api::Attrs::default();
+    for (key, value) in map {
+        let known = match key.as_str() {
+            "observes" => set(&mut attrs.observes, value),
+            "cwd" => set(&mut attrs.cwd, value),
+            "pid" => set(&mut attrs.pid, value),
+            "surface" => set(&mut attrs.surface, value),
+            "model" => set(&mut attrs.model, value),
+            "last_turn" => set(&mut attrs.last_turn, value),
+            "origin" => set(&mut attrs.origin, value),
+            "agent_type" => set(&mut attrs.agent_type, value),
+            "reason" => set(&mut attrs.reason, value),
+            "prompted" => set(&mut attrs.prompted, value),
+            "tool_name" => set(&mut attrs.tool_name, value),
+            "mcp_server" => set(&mut attrs.mcp_server, value),
+            _ => false,
+        };
+        if !known {
+            attrs.other.insert(key.clone(), value.clone());
+        }
+    }
+    attrs
+}
+
+/// Sets `field` from `value` if it holds the value exactly.
+fn set<T: Serialize + DeserializeOwned>(field: &mut Option<T>, value: &Value) -> bool {
+    *field = exactly(value);
+    field.is_some()
+}
+
+/// `value` as a `T`, if it decodes and encodes back to the same JSON. An
+/// enum value this version doesn't know would come back as `other`.
+fn exactly<T: Serialize + DeserializeOwned>(value: &Value) -> Option<T> {
+    let decoded = T::deserialize(value).ok()?;
+    (serde_json::to_value(&decoded).ok()? == *value).then_some(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{Approvals, Client, Event, Interrupts, Observes, STALE_AFTER};
+    use serde_json::json;
+
+    #[test]
+    fn attrs_with_unexpected_types_keep_the_row() {
+        let client = Client {
+            name: "claude",
+            observes: Observes {
+                agents: true,
+                approvals: Approvals::Actor,
+                questions: true,
+                mcp_input: true,
+                interrupts: Interrupts::Inferred,
+            },
+        };
+        let mut tree = Tree::new(&[client], STALE_AFTER, 0);
+        let session = "/claude/session:s1";
+        let attrs = json!({"pid": "not a number", "cwd": "/tmp"});
+        tree.apply(
+            Event::Open {
+                id: session.into(),
+                attrs: attrs.as_object().unwrap().clone(),
+            },
+            1,
+        );
+        let row = tree
+            .rows()
+            .into_iter()
+            .find(|row| row.id == session)
+            .expect("the row is published");
+        assert_eq!(row.attrs.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(row.attrs.pid, None);
+        assert_eq!(row.attrs.other["pid"], "not a number");
+        assert_eq!(serde_json::to_value(&row.attrs).unwrap(), attrs);
     }
 }

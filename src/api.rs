@@ -2,6 +2,7 @@
 
 use crate::row::{Change, Row};
 use crate::tree::{Kind, kind_of};
+use eywa_api::Message;
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
@@ -97,24 +98,36 @@ impl Selection {
     }
 }
 
-pub fn snapshot_line(rev: u64, rows: &[Row]) -> String {
-    json!({"v": 1, "type": "snapshot", "rev": rev, "rows": rows}).to_string()
+fn line(message: &Message) -> String {
+    serde_json::to_string(message).expect("a message serializes")
+}
+
+pub fn snapshot_line(rev: u64, rows: Vec<Row>) -> String {
+    line(&Message::Snapshot { rev, rows })
 }
 
 pub fn change_line(rev: u64, change: &Change) -> String {
-    match change {
-        Change::Upsert(row) => json!({"v": 1, "type": "upsert", "rev": rev, "row": row}),
-        Change::Remove(id) => json!({"v": 1, "type": "remove", "rev": rev, "id": id}),
-    }
-    .to_string()
+    line(&match change {
+        Change::Upsert(row) => Message::Upsert {
+            rev,
+            row: row.clone(),
+        },
+        Change::Remove(id) => Message::Remove {
+            rev,
+            id: id.clone(),
+        },
+    })
 }
 
 pub fn stopping_line() -> String {
-    json!({"v": 1, "type": "stopping"}).to_string()
+    line(&Message::Stopping)
 }
 
 pub fn error_line(error: &ApiError) -> String {
-    json!({"v": 1, "type": "error", "code": error.code, "message": error.message}).to_string()
+    line(&Message::Error {
+        code: error.code.to_string(),
+        message: error.message.clone(),
+    })
 }
 
 /// Subscribers and their bounded queues. A subscriber that falls behind is
@@ -140,7 +153,7 @@ impl Subscribers {
             .filter(|row| selection.includes(&row.id))
             .cloned()
             .collect();
-        if sender.try_send(snapshot_line(rev, &selected)).is_ok() {
+        if sender.try_send(snapshot_line(rev, selected)).is_ok() {
             self.list.push((selection, sender));
         }
         receiver
