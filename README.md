@@ -1,5 +1,9 @@
 # Eywa
 
+<p align="center">
+  <img src="docs/assets/eywa-halftone.png" alt="A glowing willow-like tree rendered as a grid of halftone dots" width="100%">
+</p>
+
 Eywa is a macOS background service that tracks what your coding agents are
 doing and publishes one live answer to "which of them needs me?" over a local
 socket.
