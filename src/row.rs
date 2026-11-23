@@ -181,5 +181,8 @@ mod tests {
         assert_eq!(row.attrs.pid, None);
         assert_eq!(row.attrs.other["pid"], "not a number");
         assert_eq!(serde_json::to_value(&row.attrs).unwrap(), attrs);
+        // A consumer reads back the same attributes the server published.
+        let decoded: eywa_api::Attrs = serde_json::from_value(attrs).unwrap();
+        assert_eq!(decoded, row.attrs);
     }
 }

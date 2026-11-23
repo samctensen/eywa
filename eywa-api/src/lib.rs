@@ -8,7 +8,8 @@
 //! this version doesn't know, and `Attrs::other` keeps attributes it doesn't
 //! name. Eywa itself never produces `Other`.
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
@@ -218,47 +219,83 @@ pub struct Counts {
 }
 
 /// Facts about a node. Each is present only when the agent states it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// Decoding never fails on an attribute's value: one this version can't
+/// hold, such as a string `pid`, stays in `other` under its own name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Attrs {
     /// Client: what the client lets Eywa see.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub observes: Option<Observes>,
     /// Session: the working directory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Session: the agent process.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Session: usually `cli`, `desktop` or `ide`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
     /// Session: the model, as the agent names it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Session: how the most recent turn ended.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_turn: Option<LastTurn>,
     /// Turn: who sent the prompt. Claude Code only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
     /// Agent: such as `Explore`, or the name of an agent you defined.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
     /// Request: why it waits on the user. Always present on requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
     /// Request: the agent confirmed it is showing the request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompted: Option<bool>,
     /// Request: the tool asking for approval, or asking the question.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
     /// Request: the MCP server, on `mcp_input` requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
     /// Attributes this version doesn't name.
     #[serde(flatten)]
     pub other: Map<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for Attrs {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut attrs = Attrs::default();
+        for (key, value) in Map::deserialize(deserializer)? {
+            let held = match key.as_str() {
+                "observes" => hold(&mut attrs.observes, &value),
+                "cwd" => hold(&mut attrs.cwd, &value),
+                "pid" => hold(&mut attrs.pid, &value),
+                "surface" => hold(&mut attrs.surface, &value),
+                "model" => hold(&mut attrs.model, &value),
+                "last_turn" => hold(&mut attrs.last_turn, &value),
+                "origin" => hold(&mut attrs.origin, &value),
+                "agent_type" => hold(&mut attrs.agent_type, &value),
+                "reason" => hold(&mut attrs.reason, &value),
+                "prompted" => hold(&mut attrs.prompted, &value),
+                "tool_name" => hold(&mut attrs.tool_name, &value),
+                "mcp_server" => hold(&mut attrs.mcp_server, &value),
+                _ => false,
+            };
+            if !held {
+                attrs.other.insert(key, value);
+            }
+        }
+        Ok(attrs)
+    }
+}
+
+/// Sets `field` from `value` if the field's type can hold it.
+fn hold<T: DeserializeOwned>(field: &mut Option<T>, value: &Value) -> bool {
+    *field = T::deserialize(value).ok();
+    field.is_some()
 }
 
 /// What a client lets Eywa see.
@@ -349,6 +386,36 @@ mod tests {
         let observes = row.attrs.observes.unwrap();
         assert_eq!(observes.approvals, Approvals::Other);
         assert_eq!(observes.interrupts, Interrupts::Other);
+    }
+
+    /// A documented attribute holding a type this version doesn't expect
+    /// doesn't cost the row: it stays in `other`, and encodes back unchanged.
+    #[test]
+    fn attrs_with_unexpected_types_still_decode() {
+        let line = json!({
+            "v": 1, "type": "upsert", "rev": 7,
+            "row": {
+                "id": "/claude/session:s1", "kind": "session", "state": "idle",
+                "since": "2026-11-18T20:41:07.000Z",
+                "attrs": {
+                    "cwd": "/tmp", "pid": "not a number", "last_turn": 5,
+                    "surface": null, "colour": "red"
+                }
+            }
+        });
+        let message: Message = serde_json::from_value(line.clone()).unwrap();
+        let Message::Upsert { ref row, .. } = message else {
+            panic!("not an upsert: {message:?}");
+        };
+        assert_eq!(row.attrs.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(row.attrs.pid, None);
+        assert_eq!(row.attrs.last_turn, None);
+        assert_eq!(row.attrs.surface, None);
+        assert_eq!(row.attrs.other["pid"], "not a number");
+        assert_eq!(row.attrs.other["last_turn"], 5);
+        assert_eq!(row.attrs.other["surface"], Value::Null);
+        assert_eq!(row.attrs.other["colour"], "red");
+        same(&message, line);
     }
 
     #[test]
