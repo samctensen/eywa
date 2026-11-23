@@ -631,8 +631,9 @@ fn top_draws_the_tree() {
         row("/codex", "client", "idle", json!({})),
     ]
     .into_iter()
+    .map(|(id, row)| (id, serde_json::from_value(row).unwrap()))
     .collect::<eywa::top::Rows>();
-    rows.get_mut("/claude/session:s5").unwrap()["since"] = json!("2026-11-18T20:01:00.000Z");
+    rows.get_mut("/claude/session:s5").unwrap().since = "2026-11-18T20:01:00.000Z".into();
     let now = humantime::parse_rfc3339("2026-11-18T20:02:05Z").unwrap();
     let now = now
         .duration_since(std::time::UNIX_EPOCH)
