@@ -259,6 +259,12 @@
             "outcome": { "$ref": "#/$defs/Outcome" },
             "ended_at": { "$ref": "#/$defs/Timestamp" }
           }
+        },
+        "model": {
+          "description": "The model the session's main thread runs on, as the client names it. Missing until the client names it. Names aren't translated, so they aren't comparable across clients.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       }
     },

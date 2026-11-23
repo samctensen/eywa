@@ -238,6 +238,19 @@ What each client reports today:
 | `last_turn` | object | How the session's most recent turn ended. Missing until a turn ends, and while Eywa is still learning how the latest turn ended: after a Claude Code interrupt it follows the `idle` state by up to two seconds. |
 | `last_turn.outcome` | string | `ok`, `error` or `cancelled` (interrupted). |
 | `last_turn.ended_at` | string | When it ended, in the same format as `since`. |
+| `model` | string | The model the session's main thread runs on, as the client names it, for example `claude-opus-5-5`. Missing until the client names it. Eywa doesn't translate names, so they aren't comparable across clients. |
+
+Where each client names the model:
+
+| Client | `model` |
+| --- | --- |
+| `claude` | When the session starts, resumes, clears or compacts, if Claude Code states it. A model you switch to mid-session isn't seen until the next of those. |
+| `codex` | On every main-thread event, so a switch shows at the next one. |
+| `grok` | When the session starts. A later switch isn't seen. |
+| `muse` | On every main-thread event, so a switch shows at the next one. |
+
+A subagent can run on another model. Eywa doesn't publish that: an event
+that names a subagent never changes the session's `model`.
 
 Session titles aren't published, because clients generate them from your
 prompts.
@@ -381,6 +394,7 @@ export interface Attrs {
   pid?: number;
   surface?: string;
   last_turn?: { outcome: Outcome; ended_at: string };
+  model?: string;
   /** Turn, Claude Code only. */
   origin?: "person" | "machine";
   /** Agent. */

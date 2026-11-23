@@ -51,7 +51,7 @@ open approval request." Every higher-level answer is computed from that.
 /                                  machine
 └─ /claude                         client
    ├─ /claude/process:4321         running process not yet linked to a session
-   └─ /claude/session:7f3a         session (attrs: cwd, pid, surface)
+   └─ /claude/session:7f3a         session (attrs: cwd, pid, surface, model)
       └─ …/turn:12                 turn
          └─ …/agent:a2             subagent (attrs: agent_type)
             └─ …/request:t9        approval, question or MCP input request
@@ -183,16 +183,21 @@ open, so it runs in the adapter inside Eywa.
 
 **Allowed fields:** event name, session id, turn or prompt id, agent id and type,
 tool use id (and the ids in a batch), tool name, notification type, source,
-elicitation id, MCP server name, `StopFailure`'s error code, background
-task ids, types and statuses, `cwd`, the transcript path and the client's
-timestamp. A `reason` is kept only when it is `channel_closed` or `shutdown`,
+elicitation id, MCP server name, model name, `StopFailure`'s error code,
+background task ids, types and statuses, `cwd`, the transcript path and the
+client's timestamp. A model name is kept only when it is a short, printable
+string, and from Grok only on `SessionStart`, since its child sessions never
+start that way. A `reason` is kept only when it is `channel_closed` or `shutdown`,
 which Grok's `Stop` sends at session end; any other value is dropped, because
 some events put free text there, such as why Claude Code's auto mode denied a
 tool call. Prompts, responses, commands, tool arguments and tool output never
 cross the socket or touch disk. Alongside ids and `cwd`, Eywa publishes tool
 names, subagent types and MCP server names: each on the request or agent it
 describes, and only where the client states it for that node. Eywa never fills
-one in from a guess, such as the call an approval is matched to.
+one in from a guess, such as the call an approval is matched to. A session row
+carries the model its main thread names. An event that names a subagent may
+carry the subagent's model, so it never changes the session's; Claude Code and
+Grok name the model only when a session starts, so a later switch isn't seen.
 
 **Tool input digest.** To match an approval with its tool call, the hook command
 computes SHA-256 over the tool name and the tool input re-serialized with sorted
@@ -424,7 +429,7 @@ Depth only limits which rows are sent.
 - `counts` appears on machine and client rows. It counts the open sessions beneath
   the row, in total and by state. `counts.sessions` answers "is it running at
   all?" and `state` answers "is it busy?"
-- Session rows include `cwd`, `pid`, `surface` and
+- Session rows include `cwd`, `pid`, `surface`, `model` and
   `last_turn: { outcome, ended_at }`. Session titles are left out because clients
   generate them from prompts.
 - Request rows include `reason`, and `tool_name` and (for MCP input)
