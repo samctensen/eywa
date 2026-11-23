@@ -85,6 +85,14 @@ pub(crate) fn open_session(path: &str, record: &HookRecord) -> Event {
     if let Some(surface) = &record.surface {
         attrs.insert("surface".into(), surface.clone().into());
     }
+    // A record naming a subagent may carry the subagent's model, not the
+    // session's.
+    if record.agent_id.is_none()
+        && let Some(model) = &record.model
+        && crate::record::is_model_name(model)
+    {
+        attrs.insert("model".into(), model.clone().into());
+    }
     open(path.to_string(), attrs)
 }
 

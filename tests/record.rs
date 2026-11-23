@@ -125,6 +125,37 @@ fn every_client_maps_into_one_shape() {
 }
 
 #[test]
+fn the_model_is_read_where_each_client_names_it() {
+    let model = |client: &str, payload| HookRecord::from_payload(client, &payload).unwrap().model;
+    let claude =
+        json!({"hook_event_name": "SessionStart", "session_id": "s1", "model": "claude-opus"});
+    assert_eq!(model("claude", claude).as_deref(), Some("claude-opus"));
+    let codex = json!({"hook_event_name": "PreToolUse", "session_id": "s1", "model": "gpt-codex"});
+    assert_eq!(model("codex", codex).as_deref(), Some("gpt-codex"));
+    let muse = json!({"hook_event_name": "Stop", "session_id": "s1", "model": "muse-large"});
+    assert_eq!(model("muse", muse).as_deref(), Some("muse-large"));
+    let object = json!({"hook_event_name": "SessionStart", "session_id": "s1",
+                        "model": {"id": "claude-opus", "display_name": "Opus"}});
+    assert_eq!(model("claude", object).as_deref(), Some("claude-opus"));
+
+    // Grok names the model when a session starts. Its child sessions never
+    // start that way, so a model on any other event isn't trusted.
+    let started =
+        json!({"hookEventName": "session_start", "sessionId": "g1", "modelId": "grok-code"});
+    assert_eq!(model("grok", started).as_deref(), Some("grok-code"));
+    let later = json!({"hookEventName": "pre_tool_use", "sessionId": "g1", "modelId": "grok-code"});
+    assert_eq!(model("grok", later), None);
+
+    // A name is published as it arrives, so anything that isn't a short,
+    // printable string is dropped.
+    for unusable in [json!(""), json!("a\nb"), json!("m".repeat(200)), json!(7)] {
+        let payload =
+            json!({"hook_event_name": "SessionStart", "session_id": "s1", "model": unusable});
+        assert_eq!(model("claude", payload), None);
+    }
+}
+
+#[test]
 fn digest_ignores_key_order() {
     let a: serde_json::Value = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
     let b: serde_json::Value = serde_json::from_str(r#"{"b":2,"a":1}"#).unwrap();

@@ -878,6 +878,70 @@ fn a_grok_childs_start_types_neither_agent() {
     assert_eq!(attrs(&t, "/grok/session:s1/turn:p1/agent:c2"), json!({}));
 }
 
+/// A session row names the model its main thread runs on, once the client
+/// says so, and follows a later change.
+#[test]
+fn sessions_name_their_model() {
+    let started = [("SessionStart", json!({"model": "m1"}))];
+    for (client, tree) in [
+        ("claude", claude(&started)),
+        ("codex", codex(&started)),
+        ("grok", grok(&started)),
+        ("muse", muse(&started)),
+    ] {
+        let session = format!("/{client}/session:s1");
+        assert_eq!(attrs(&tree, &session)["model"], "m1", "{client}");
+    }
+    assert_eq!(
+        attrs(
+            &claude(&[("SessionStart", json!({}))]),
+            "/claude/session:s1"
+        ),
+        json!({}),
+        "no model until the client names one"
+    );
+
+    // A record that names a subagent may carry the subagent's model, so it
+    // never changes the session's.
+    let delegated = [
+        ("UserPromptSubmit", json!({"model": "m1"})),
+        ("SubagentStart", json!({"agent_id": "a1", "model": "m2"})),
+        (
+            "PreToolUse",
+            json!({"agent_id": "a1", "model": "m2", "tool_use_id": "tu1"}),
+        ),
+    ];
+    for (client, tree) in [("codex", codex(&delegated)), ("muse", muse(&delegated))] {
+        let session = format!("/{client}/session:s1");
+        assert_eq!(attrs(&tree, &session)["model"], "m1", "{client}");
+        let agent = format!("{session}/turn:p1/agent:a1");
+        assert_eq!(attrs(&tree, &agent).get("model"), None, "{client}");
+    }
+
+    // The main thread naming another model is one upsert of the session row;
+    // naming the same one again is none.
+    let mut adapter = CodexAdapter::new();
+    let mut tree = Tree::new(&[adapter.client()], STALE_AFTER, 0);
+    let steps = [
+        ("UserPromptSubmit", json!({"model": "m1"})),
+        ("PreToolUse", json!({"model": "m1", "tool_use_id": "tu1"})),
+        ("PreToolUse", json!({"model": "m3", "tool_use_id": "tu2"})),
+    ];
+    let mut changes = Vec::new();
+    for (n, step) in steps.iter().enumerate() {
+        feed(&mut tree, &mut adapter, step, n as Millis * 1000);
+        changes.push(tree.take_changes());
+    }
+    assert_eq!(changes[1], [], "the same model again");
+    match changes[2].as_slice() {
+        [Change::Upsert(row)] => {
+            assert_eq!(row.id, "/codex/session:s1");
+            assert_eq!(row.attrs["model"], "m3");
+        }
+        other => panic!("expected one upsert: {other:?}"),
+    }
+}
+
 /// A type named after its agent opened reaches subscribers as one upsert of
 /// that row, and hearing it again publishes nothing.
 #[test]

@@ -122,6 +122,9 @@ pub struct HookRecord {
     pub elicitation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
+    /// The model the event's thread runs on, as the client names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,6 +217,7 @@ impl HookRecord {
                 .filter(|reason| KEPT_REASONS.contains(&reason.as_str())),
             elicitation_id: id(object, "elicitation_id", &["elicitation_id"])?,
             mcp_server: text(object, &["mcp_server_name"]),
+            model: model(client, &event, object),
             error,
             background_tasks: background_tasks(object),
             cwd: text(object, &["cwd"]),
@@ -275,6 +279,27 @@ fn event_name(client: &str, object: &Map<String, Value>) -> String {
             .collect(),
         _ => String::new(),
     }
+}
+
+/// The model named in a payload, as a string or as an object with an `id`.
+/// Grok names it only when a session starts, and its child sessions never
+/// start that way, so a model on any other Grok event is left out.
+fn model(client: &str, event: &str, object: &Map<String, Value>) -> Option<String> {
+    if client == "grok" && event != "SessionStart" {
+        return None;
+    }
+    let name = match get(object, &["model", "modelId"])? {
+        Value::String(name) => name,
+        Value::Object(model) => model.get("id")?.as_str()?,
+        _ => return None,
+    };
+    is_model_name(name).then(|| name.to_string())
+}
+
+/// A model name is published as it arrives, so it must be short and
+/// printable.
+pub fn is_model_name(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_ID_BYTES && !value.chars().any(char::is_control)
 }
 
 fn is_subagent_event(event: &str) -> bool {

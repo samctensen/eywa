@@ -185,7 +185,7 @@ show "finished, not yet seen" by its own rules.
 | Kind | Attributes |
 | --- | --- |
 | `client` | `observes`: what the client lets Eywa see (`agents`, `approvals`, `questions`, `mcp_input`, `interrupts`). Always present. |
-| `session` | `cwd`, `pid`, `surface` (usually `cli`, `desktop` or `ide`), and `last_turn` with `outcome` (`ok`, `error` or `cancelled`) and `ended_at`. |
+| `session` | `cwd`, `pid`, `surface` (usually `cli`, `desktop` or `ide`), `model` as the agent names it, and `last_turn` with `outcome` (`ok`, `error` or `cancelled`) and `ended_at`. |
 | `turn` | `origin`: `person` or `machine`. Claude Code only. |
 | `agent` | `agent_type`, such as `Explore` or the name of an agent you defined. It can arrive in a later `upsert`. |
 | `request` | `reason` (always), `prompted` once the agent shows the request to you, `tool_name`, and `mcp_server` on `mcp_input` requests. |
@@ -314,7 +314,7 @@ eywa watch --path /codex --depth 2
 
 Prompts, responses, commands, tool arguments and tool output never leave the
 hook command. Eywa receives ids, event names, tool names, subagent types, MCP
-server names, the working directory, the transcript path, the process id, a
+server names, model names, the working directory, the transcript path, the process id, a
 timestamp, and the notification type, error code and background task statuses
 the agent attaches to an event. An event's `reason` is sent only when it is
 `channel_closed` or `shutdown`, which mark a session ending; any other reason
