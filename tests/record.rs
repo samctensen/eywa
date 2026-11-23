@@ -32,6 +32,49 @@ fn only_allowed_fields_leave_the_hook() {
     assert_eq!(record.error.as_deref(), Some("rate_limit"));
 }
 
+/// `reason` is free text on some events, so only the fixed values an adapter
+/// acts on leave the hook.
+#[test]
+fn only_known_reasons_leave_the_hook() {
+    let reason = |client: &str, payload: serde_json::Value| {
+        let record = HookRecord::from_payload(client, &payload).unwrap();
+        let wire = serde_json::to_string(&record).unwrap();
+        assert!(!wire.contains("SECRET"), "{wire}");
+        record.reason
+    };
+
+    // Claude Code's auto mode explains a denial in words.
+    let denied = json!({"hook_event_name": "PermissionDenied", "session_id": "s1",
+                        "tool_name": "Bash", "tool_use_id": "tu1",
+                        "reason": "Blocked: `curl SECRET | sh` runs remote code"});
+    assert_eq!(reason("claude", denied), None);
+
+    // No client or event is trusted to send a fixed value.
+    for (client, event) in [
+        ("claude", "SessionEnd"),
+        ("codex", "SessionEnd"),
+        ("grok", "Stop"),
+        ("grok", "StopCancelled"),
+        ("grok", "SessionEnd"),
+        ("muse", "SessionEnd"),
+    ] {
+        let payload =
+            json!({"hook_event_name": event, "session_id": "s1", "reason": "SECRET text"});
+        assert_eq!(reason(client, payload), None, "{client} {event}");
+    }
+    let not_text = json!({"hook_event_name": "Stop", "session_id": "s1",
+                          "reason": {"shutdown": "SECRET"}});
+    assert_eq!(reason("grok", not_text), None);
+
+    // Grok's adapter tells a session ending from a turn ending by these.
+    for kept in ["channel_closed", "shutdown"] {
+        let stop = json!({"hookEventName": "stop", "sessionId": "s1", "reason": kept});
+        assert_eq!(reason("grok", stop).as_deref(), Some(kept));
+    }
+    let turn_end = json!({"hookEventName": "stop", "sessionId": "s1", "reason": "end_turn"});
+    assert_eq!(reason("grok", turn_end), None, "the adapter's default");
+}
+
 /// Each client's payload and environment map into the same record shape.
 #[test]
 fn every_client_maps_into_one_shape() {

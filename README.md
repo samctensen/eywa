@@ -311,8 +311,10 @@ eywa watch --path /codex --depth 2
 Prompts, responses, commands, tool arguments and tool output never leave the
 hook command. Eywa receives ids, event names, tool names, subagent types, MCP
 server names, the working directory, the transcript path, the process id, a
-timestamp, and the notification type, stop reason, error code and background
-task statuses the agent attaches to an event. Tool input is reduced to a
+timestamp, and the notification type, error code and background task statuses
+the agent attaches to an event. An event's `reason` is sent only when it is
+`channel_closed` or `shutdown`, which mark a session ending; any other reason
+is dropped, because it can be free text. Tool input is reduced to a
 hash, used only to match an approval with the tool call it belongs to. To see
 the exact record, set `EYWA_RECORD` as described under
 [Development](#development). Eywa also reads Claude Code's session files in
