@@ -166,12 +166,12 @@ See [docs/design.md](docs/design.md) for the full design.
 ## Privacy
 
 Prompts, responses, commands, tool arguments and tool output never leave the
-hook command. Eywa receives identifiers, event names, tool names, the working
-directory and the transcript path. Tool input is reduced to a hash, used only
-to match an approval with the tool call it belongs to. Eywa also reads Claude
-Code's session status files in `~/.claude/sessions` (session ids, process ids
-and status), never transcripts. Everything stays on your machine, in a
-directory only you can read.
+hook command. Eywa receives identifiers, event names, the names of tools,
+subagent types and MCP servers, the working directory and the transcript path.
+Tool input is reduced to a hash, used only to match an approval with the tool
+call it belongs to. Eywa also reads Claude Code's session status files in
+`~/.claude/sessions` (session ids, process ids and status), never transcripts.
+Everything stays on your machine, in a directory only you can read.
 
 ## Development
 

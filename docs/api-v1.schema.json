@@ -191,6 +191,10 @@
           "then": { "properties": { "attrs": { "$ref": "#/$defs/TurnAttrs" } } }
         },
         {
+          "if": { "properties": { "kind": { "const": "agent" } } },
+          "then": { "properties": { "attrs": { "$ref": "#/$defs/AgentAttrs" } } }
+        },
+        {
           "if": { "properties": { "kind": { "const": "request" } } },
           "then": { "properties": { "attrs": { "$ref": "#/$defs/RequestAttrs" } } }
         }
@@ -267,6 +271,16 @@
         }
       }
     },
+    "AgentAttrs": {
+      "type": "object",
+      "properties": {
+        "agent_type": {
+          "description": "The kind of subagent, as the client names it. Missing until the client names it; it can arrive in a later upsert.",
+          "type": "string",
+          "examples": ["Explore", "general-purpose"]
+        }
+      }
+    },
     "RequestAttrs": {
       "type": "object",
       "required": ["reason"],
@@ -275,6 +289,15 @@
         "prompted": {
           "description": "The client confirmed it is showing the request to the user.",
           "type": "boolean"
+        },
+        "tool_name": {
+          "description": "The tool the request is for, as the client names it. Missing when the client doesn't say which tool.",
+          "type": "string",
+          "examples": ["Bash", "mcp__github__create_issue", "AskUserQuestion"]
+        },
+        "mcp_server": {
+          "description": "On mcp_input requests: the MCP server asking. Missing when the client doesn't say.",
+          "type": "string"
         }
       }
     }

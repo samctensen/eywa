@@ -53,8 +53,9 @@ open approval request." Every higher-level answer is computed from that.
    ├─ /claude/process:4321         running process not yet linked to a session
    └─ /claude/session:7f3a         session (attrs: cwd, pid, surface)
       └─ …/turn:12                 turn
-         └─ …/agent:a2             subagent
+         └─ …/agent:a2             subagent (attrs: agent_type)
             └─ …/request:t9        approval, question or MCP input request
+                                   (attrs: reason, tool_name, mcp_server)
 ```
 
 Each node has the same shape:
@@ -68,7 +69,7 @@ Each node has the same shape:
   "opened_at": "2026-11-18T20:41:07Z",
   "closed_at": null,
   "outcome": null,
-  "attrs": { "reason": "approval" }
+  "attrs": { "reason": "approval", "tool_name": "Bash" }
 }
 ```
 
@@ -185,7 +186,10 @@ tool use id (and the ids in a batch), tool name, notification type, source,
 reason, elicitation id, MCP server name, `StopFailure`'s error code, background
 task ids, types and statuses, `cwd`, the transcript path and the client's
 timestamp. Prompts, responses, commands, tool arguments and tool output never
-cross the socket or touch disk.
+cross the socket or touch disk. Alongside ids and `cwd`, Eywa publishes tool
+names, subagent types and MCP server names: each on the request or agent it
+describes, and only where the client states it for that node. Eywa never fills
+one in from a guess, such as the call an approval is matched to.
 
 **Tool input digest.** To match an approval with its tool call, the hook command
 computes SHA-256 over the tool name and the tool input re-serialized with sorted
@@ -248,7 +252,8 @@ Every adapter maps its client's events onto one tracker per session:
 - **Subagents** attach to the root turn that started them, whatever turn ids their
   own events carry, and keep running when that turn ends. Their activity after
   that doesn't reopen the turn (it is `retract`ed if opening the subagent brought
-  it back) and says nothing about how it ended.
+  it back) and says nothing about how it ended. A subagent's type, once a hook
+  names it, stays with it when it runs again.
 - **Tool calls** are remembered per actor (the main thread or a subagent) with
   their input digest.
 - **Requests.** No client puts a call id on its approval request, so an approval
@@ -256,7 +261,8 @@ Every adapter maps its client's events onto one tracker per session:
   only open call, else by the digest. The call finishing closes it. A new tool call
   from the same actor also answers it, but only once it has been open for a
   second: parallel calls run their hooks together, and a sibling's `PreToolUse`
-  can arrive just after the approval request.
+  can arrive just after the approval request. A request names its tool only when
+  the hook that opens it does; the call it is keyed to never supplies one.
 
 ## Adapters
 
@@ -270,14 +276,14 @@ session to confirm.
 | --- | --- |
 | `SessionStart` | `open` session. A different session from the same process (`/clear`, resuming in a running process, a fork) ends the old one. |
 | `UserPromptSubmit` | `open` turn, keyed by `prompt_id`. `source` sets the turn's `origin`: `person` for `user` and `sdk`, `machine` otherwise, for example a background task reporting back. |
-| `PreToolUse` | Remember the call. `AskUserQuestion` opens a `question` request keyed by `tool_use_id`. |
-| `PermissionRequest` | `open` an `approval` request under the asking actor. |
+| `PreToolUse` | Remember the call. `AskUserQuestion` opens a `question` request keyed by `tool_use_id`, with that `tool_name`. |
+| `PermissionRequest` | `open` an `approval` request under the asking actor, with the `tool_name` the hook names. |
 | `PostToolUse`, `PostToolUseFailure` | `close` the call's request. An MCP tool finishing closes the actor's `mcp_input` requests. |
 | `PostToolBatch` | `close` the requests of every call in the batch: they are resolved. |
 | `PermissionDenied` | `close` the call's request as `cancelled`. Auto mode only; a person's denial sends nothing. |
-| `Elicitation` / `ElicitationResult` | `open` / `close` an `mcp_input` request, keyed by `elicitation_id`, or by the server name when there is none. |
-| `Notification` | `idle_prompt` closes the open turn as `cancelled`. `permission_prompt` marks open approvals `prompted`, or opens one if none is open (sandbox network prompts). `elicitation_complete` and `elicitation_response` close `mcp_input` requests. |
-| `SubagentStart` | `open` (or reopen) the agent, keyed by `agent_id`, under its original turn. |
+| `Elicitation` / `ElicitationResult` | `open` / `close` an `mcp_input` request, keyed by `elicitation_id`, or by the server name when there is none. It carries the server name as `mcp_server`. |
+| `Notification` | `idle_prompt` closes the open turn as `cancelled`. `permission_prompt` marks open approvals `prompted`, or opens one if none is open (sandbox network prompts), which names no tool. `elicitation_complete` and `elicitation_response` close `mcp_input` requests. |
+| `SubagentStart` | `open` (or reopen) the agent, keyed by `agent_id`, under its original turn, with its `agent_type`. Only this hook sets the type: `SubagentStop` can name the session's agent instead, for Claude's internal agents. |
 | `SubagentStop`, `TeammateIdle` | `close` the agent. |
 | `Stop` | `close` turn as `ok`. Reconcile agents against `background_tasks`, whose ids are agent ids: unlisted agents close unless waiting on the user, and a list with an unreadable entry is ignored. `SubagentStop` carries the same list. |
 | `StopFailure` | `close` turn as `error`, with the error code. |
@@ -286,6 +292,8 @@ session to confirm.
 Claude has no interrupt hook. An interrupted turn closes on the next prompt, an
 `idle_prompt` notification, the session registry going idle (see Recovery), or
 `SessionEnd`. The registry also reports a granted approval, which no hook does.
+A request the registry opens names no tool or server: it says only what kind
+of input Claude waits for.
 
 ### Codex
 
@@ -296,10 +304,10 @@ Claude has no interrupt hook. An interrupted turn closes on the next prompt, an
 | --- | --- |
 | `SessionStart` | `open` session. Root only, just before the first turn. |
 | `UserPromptSubmit` | Root: `open` turn keyed by `turn_id`. Subagent: confirm the agent. |
-| `PreToolUse` | Remember the call. `request_user_input` opens a `question` (**verify** the tool name). |
-| `PermissionRequest` | `open` an `approval` request under the actor. May also fire when Codex's automatic reviewer will decide. |
+| `PreToolUse` | Remember the call. `request_user_input` opens a `question` (**verify** the tool name), with that `tool_name`. |
+| `PermissionRequest` | `open` an `approval` request under the actor, with the `tool_name` the hook names. May also fire when Codex's automatic reviewer will decide. |
 | `PostToolUse` | `close` the call's request. Fires only when the tool succeeds. |
-| `SubagentStart` / `SubagentStop` | `open` / `close` the agent under the running root turn. `SubagentStop` fires after each of the subagent's turns; it can run again. |
+| `SubagentStart` / `SubagentStop` | `open` / `close` the agent under the running root turn. `SubagentStop` fires after each of the subagent's turns; it can run again. Every hook from inside a subagent carries its role as `agent_type`. |
 | `Stop` | Root only: `close` turn as `ok`. |
 | `Interrupt` | `close` turn as `cancelled`. |
 | `SessionEnd` | `close` session. Fires on archive, delete, normal exit, or after 30 idle minutes with no connected client. |
@@ -322,15 +330,16 @@ flattening nested subagents under the root turn.
 | `Notification` | `permission_prompt` opens an `approval` under the turn, keyed by the newest call. `idle_prompt` closes the open turn as `cancelled`. |
 | `PostToolUse`, `PostToolUseFailure` | `close` the call's request. |
 | `PermissionDenied` | `close` the call's request as `cancelled`. |
-| `SubagentStart` / `SubagentStop` | `open` / `close` the child as an agent. |
+| `SubagentStart` / `SubagentStop` | `open` / `close` the child as an agent. Its type comes from the child's own hooks, whose `subagentType` is its own: a `SubagentStart` raised in a child, or in a child Eywa never saw start and takes for a root, may name either agent. |
 | `Stop` | `close` turn as `ok` (`channel_closed` and `shutdown` close it as `cancelled`). Reconcile subagent tasks in `backgroundTasks`. |
 | `StopCancelled` | Root: `close` turn as `cancelled` (an interrupt, or a rejected or dismissed approval). Child: `close` the agent. |
 | `StopFailure` | Root: `close` turn as `error`. Child: `close` the agent. |
 | `SessionEnd` | Root: `close` session. Child: `close` the agent. |
 
-Approvals carry no ids, so they attach to the turn. Tool events carry no prompt id,
-so the root's tool activity belongs to the open turn. MCP input requests aren't
-reported. Hooks in an untrusted folder are skipped silently.
+Approvals carry no ids and no tool name, so they attach to the turn and name no
+tool: the newest call they are keyed to is only a guess. Tool events carry no
+prompt id, so the root's tool activity belongs to the open turn. MCP input
+requests aren't reported. Hooks in an untrusted folder are skipped silently.
 
 ### Muse Code
 
@@ -341,8 +350,8 @@ that thread as `agent_id`, both from the hook environment.
 | --- | --- |
 | `UserPromptSubmit` | Main thread: `open` turn keyed by `turn_id`. Subagent thread: confirm the agent. |
 | `PreToolUse` | Remember the call. |
-| `PermissionRequest` | `open` an `approval` request under the actor. |
-| `Notification` (`permission_prompt`) | Mark open approvals `prompted`, or open one if none is open. |
+| `PermissionRequest` | `open` an `approval` request under the actor, with the `tool_name` the hook names. |
+| `Notification` (`permission_prompt`) | Mark open approvals `prompted`, or open one if none is open, which names no tool. |
 | `ToolUseStart` | `close` the call's approval: it was granted. |
 | `PostToolUse`, `PostToolUseFailure` | `close` the call's request. |
 | `SubagentStart` / `SubagentStop` | `open` / `close` the child thread as an agent. |
@@ -351,9 +360,11 @@ that thread as `agent_id`, both from the hook environment.
 | `SessionEnd` | Main thread: `close` session. |
 
 There is no interrupt hook; an interrupted turn closes on the next prompt or
-staleness. A question tool hasn't been identified (**verify**). One wrong-typed
-field disables every hook in Muse's settings file, so `eywa setup` writes exact
-JSON and seeds a new file with `schema_version`.
+staleness. A question tool hasn't been identified (**verify**). Muse names a
+subagent's type only on `PostToolBatch` and `StopFailure`, so agents carry no
+`agent_type`. One wrong-typed field disables every hook in Muse's settings
+file, so `eywa setup` writes exact JSON and seeds a new file with
+`schema_version`.
 
 ## Local API v1
 
@@ -413,6 +424,9 @@ Depth only limits which rows are sent.
 - Session rows include `cwd`, `pid`, `surface` and
   `last_turn: { outcome, ended_at }`. Session titles are left out because clients
   generate them from prompts.
+- Request rows include `reason`, and `tool_name` and (for MCP input)
+  `mcp_server` when the client names them. Agent rows include `agent_type` once
+  the client names it, which can be after the row first appears.
 
 ### Messages
 
