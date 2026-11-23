@@ -3,14 +3,16 @@
 //! these same types, so decoding with them reads exactly what Eywa publishes.
 //! See `docs/api.md` for what every field means.
 //!
-//! Version 1 only ever adds things. Every enum has an `Other` variant for
-//! values a newer Eywa may send, `Message::Other` stands for message types
-//! this version doesn't know, and `Attrs::other` keeps attributes it doesn't
-//! name. Eywa itself never produces `Other`.
+//! Version 1 only ever adds things. Every enum has an `Other` variant that
+//! stands in for a value a newer Eywa may send, and `Message::Other` stands
+//! in for a message type this version doesn't know. Neither keeps what was
+//! sent, so they encode as `"other"`. `Attrs::other` does keep the attributes
+//! this version doesn't name. Eywa itself never produces `Other`.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// The API socket's file name inside Eywa's directory.
@@ -18,11 +20,14 @@ pub const API_SOCKET: &str = "api.sock";
 
 /// Eywa's directory: `$EYWA_DIR`, or `~/Library/Application Support/eywa`.
 pub fn default_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("EYWA_DIR") {
-        return PathBuf::from(dir);
+    dir_from(std::env::var_os("EYWA_DIR"), std::env::var_os("HOME"))
+}
+
+fn dir_from(eywa_dir: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    match eywa_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(home.unwrap_or_default()).join("Library/Application Support/eywa"),
     }
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Application Support/eywa")
 }
 
 macro_rules! wire_enum {
@@ -32,7 +37,8 @@ macro_rules! wire_enum {
         #[serde(rename_all = "snake_case")]
         pub enum $name {
             $($(#[$vmeta])* $variant,)+
-            /// A value from a newer Eywa that this version doesn't know.
+            /// Stands in for a value from a newer Eywa that this version
+            /// doesn't know. The value itself isn't kept.
             #[serde(other)]
             Other,
         }
@@ -218,85 +224,133 @@ pub struct Counts {
     pub idle: u32,
 }
 
-/// Facts about a node. Each is present only when the agent states it.
-///
-/// Decoding never fails on an attribute's value: one this version can't
-/// hold, such as a string `pid`, stays in `other` under its own name.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Attrs {
+macro_rules! attrs {
+    ($($(#[$meta:meta])* $name:ident: $type:ty,)+) => {
+        /// Facts about a node. Each is present only when the agent states it.
+        ///
+        /// Decoding never fails on an attribute's value: one this version
+        /// can't hold, such as a string `pid`, stays in `other` under its own
+        /// name.
+        #[derive(Clone, Debug, Default, PartialEq, Serialize)]
+        pub struct Attrs {
+            $(
+                $(#[$meta])*
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub $name: Option<$type>,
+            )+
+            /// Attributes this version doesn't name, or whose value it
+            /// can't hold.
+            #[serde(flatten)]
+            pub other: Map<String, Value>,
+        }
+
+        impl Attrs {
+            fn read(map: &Map<String, Value>, read: Read) -> Attrs {
+                let mut attrs = Attrs::default();
+                for (key, value) in map {
+                    let held = match key.as_str() {
+                        $(stringify!($name) => {
+                            attrs.$name = match read {
+                                Read::Decode => Field::decode(value),
+                                Read::Exact => Field::exact(value),
+                            };
+                            attrs.$name.is_some()
+                        })+
+                        _ => false,
+                    };
+                    if !held {
+                        attrs.other.insert(key.clone(), value.clone());
+                    }
+                }
+                attrs
+            }
+        }
+    };
+}
+
+// The one list of documented attributes: `Attrs`' fields, and what reading a
+// map looks for.
+attrs! {
     /// Client: what the client lets Eywa see.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub observes: Option<Observes>,
+    observes: Observes,
     /// Session: the working directory.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
+    cwd: String,
     /// Session: the agent process.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
+    pid: u32,
     /// Session: usually `cli`, `desktop` or `ide`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub surface: Option<String>,
+    surface: String,
     /// Session: the model, as the agent names it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    model: String,
     /// Session: how the most recent turn ended.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_turn: Option<LastTurn>,
+    last_turn: LastTurn,
     /// Turn: who sent the prompt. Claude Code only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
+    origin: Origin,
     /// Agent: such as `Explore`, or the name of an agent you defined.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_type: Option<String>,
+    agent_type: String,
     /// Request: why it waits on the user. Always present on requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<Reason>,
+    reason: Reason,
     /// Request: the agent confirmed it is showing the request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompted: Option<bool>,
+    prompted: bool,
     /// Request: the tool asking for approval, or asking the question.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_name: Option<String>,
+    tool_name: String,
     /// Request: the MCP server, on `mcp_input` requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mcp_server: Option<String>,
-    /// Attributes this version doesn't name.
-    #[serde(flatten)]
-    pub other: Map<String, Value>,
+    mcp_server: String,
+}
+
+impl Attrs {
+    /// The attributes in `map`, for a program that writes the API, as Eywa
+    /// does. A value becomes a field only if the field writes it back
+    /// unchanged; anything else stays in `other`, including an enum value
+    /// this version doesn't know. So the result always encodes to `map`, and
+    /// never holds an `Other`.
+    pub fn exactly(map: &Map<String, Value>) -> Attrs {
+        Attrs::read(map, Read::Exact)
+    }
 }
 
 impl<'de> Deserialize<'de> for Attrs {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut attrs = Attrs::default();
-        for (key, value) in Map::deserialize(deserializer)? {
-            let held = match key.as_str() {
-                "observes" => hold(&mut attrs.observes, &value),
-                "cwd" => hold(&mut attrs.cwd, &value),
-                "pid" => hold(&mut attrs.pid, &value),
-                "surface" => hold(&mut attrs.surface, &value),
-                "model" => hold(&mut attrs.model, &value),
-                "last_turn" => hold(&mut attrs.last_turn, &value),
-                "origin" => hold(&mut attrs.origin, &value),
-                "agent_type" => hold(&mut attrs.agent_type, &value),
-                "reason" => hold(&mut attrs.reason, &value),
-                "prompted" => hold(&mut attrs.prompted, &value),
-                "tool_name" => hold(&mut attrs.tool_name, &value),
-                "mcp_server" => hold(&mut attrs.mcp_server, &value),
-                _ => false,
-            };
-            if !held {
-                attrs.other.insert(key, value);
-            }
-        }
-        Ok(attrs)
+        Ok(Attrs::read(&Map::deserialize(deserializer)?, Read::Decode))
     }
 }
 
-/// Sets `field` from `value` if the field's type can hold it.
-fn hold<T: DeserializeOwned>(field: &mut Option<T>, value: &Value) -> bool {
-    *field = T::deserialize(value).ok();
-    field.is_some()
+/// How strictly a map's values become fields.
+#[derive(Clone, Copy)]
+enum Read {
+    /// Whatever the field's type can hold. An unknown enum value is `Other`.
+    Decode,
+    /// Only what the field's type writes back unchanged.
+    Exact,
 }
+
+/// How an attribute's type reads a JSON value.
+trait Field: Serialize + DeserializeOwned {
+    fn decode(value: &Value) -> Option<Self> {
+        Self::deserialize(value).ok()
+    }
+
+    fn exact(value: &Value) -> Option<Self> {
+        let decoded = Self::decode(value)?;
+        (serde_json::to_value(&decoded).ok()? == *value).then_some(decoded)
+    }
+}
+
+impl Field for Observes {}
+impl Field for LastTurn {}
+impl Field for Origin {}
+impl Field for Reason {}
+
+/// Decoding these loses nothing, so there is nothing to check.
+macro_rules! lossless {
+    ($($type:ty),+) => {
+        $(impl Field for $type {
+            fn exact(value: &Value) -> Option<Self> {
+                Self::decode(value)
+            }
+        })+
+    };
+}
+lossless!(String, u32, bool);
 
 /// What a client lets Eywa see.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,10 +485,45 @@ mod tests {
     }
 
     #[test]
-    fn default_dir_honors_eywa_dir_or_home() {
-        assert!(
-            default_dir().ends_with("Library/Application Support/eywa")
-                || std::env::var_os("EYWA_DIR").is_some()
+    fn the_directory_is_eywa_dir_or_under_home() {
+        let home = Some(OsString::from("/Users/me"));
+        assert_eq!(
+            dir_from(Some("/tmp/eywa".into()), home.clone()),
+            PathBuf::from("/tmp/eywa")
         );
+        assert_eq!(
+            dir_from(None, home),
+            PathBuf::from("/Users/me/Library/Application Support/eywa")
+        );
+    }
+
+    /// What a writer of the API builds from a map always encodes back to
+    /// that map, and never holds an `Other`.
+    #[test]
+    fn exact_attrs_encode_back_to_their_map() {
+        let map = json!({
+            "cwd": "/tmp", "pid": 7, "prompted": true, "reason": "vibes",
+            "origin": "person", "surface": 3, "colour": "red",
+            "last_turn": { "outcome": "ok", "ended_at": "2026-11-18T20:41:07.000Z", "extra": 1 },
+            "observes": {
+                "agents": true, "approvals": "actor", "questions": true,
+                "mcp_input": false, "interrupts": "hook"
+            }
+        });
+        let attrs = Attrs::exactly(map.as_object().unwrap());
+        assert_eq!(attrs.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(attrs.pid, Some(7));
+        assert_eq!(attrs.prompted, Some(true));
+        assert_eq!(attrs.origin, Some(Origin::Person));
+        assert_eq!(attrs.observes.unwrap().approvals, Approvals::Actor);
+        assert_eq!(attrs.reason, None, "an unknown reason isn't Other");
+        assert_eq!(attrs.other["reason"], "vibes");
+        assert_eq!(attrs.surface, None);
+        assert_eq!(attrs.last_turn, None, "a field would be dropped");
+        same(&attrs, map.clone());
+        // Decoding the same map keeps what it can, as `Other` where it must.
+        let decoded: Attrs = serde_json::from_value(map).unwrap();
+        assert_eq!(decoded.reason, Some(Reason::Other));
+        assert_eq!(decoded.last_turn.unwrap().outcome, Outcome::Ok);
     }
 }

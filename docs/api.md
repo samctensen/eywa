@@ -443,10 +443,16 @@ match serde_json::from_str::<Message>(&line)? {
 ```
 
 `Request::subscribe(path, depth)` and `Request::requests()` build the request,
-and `default_dir().join(API_SOCKET)` is the socket. Every enum has an `Other`
-variant that holds values from a newer Eywa, `Message::Other` stands for a
-message type this version doesn't know, and `Attrs::other` keeps the
-attributes it doesn't name.
+and `default_dir().join(API_SOCKET)` is the socket.
+
+Decoding doesn't fail on what a newer Eywa adds:
+
+- Every enum has an `Other` variant that stands in for a value this version
+  doesn't know, and `Message::Other` stands in for an unknown message type.
+  Neither keeps what was sent: encoding one writes `"other"`, so don't relay
+  rows by decoding and re-encoding them.
+- `Attrs::other` keeps the attributes this version doesn't name, and any
+  documented attribute whose value it can't hold.
 
 ## Examples
 

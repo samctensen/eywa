@@ -1,10 +1,8 @@
 //! Rows: the published view of each node, and the changes between views.
 
-use crate::tree::{Attrs, Kind, State, Tree, rfc3339};
+use crate::tree::{Kind, State, Tree, rfc3339};
 use eywa_api::Reason;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 
 pub use eywa_api::{Counts, Row};
@@ -68,7 +66,9 @@ impl Tree {
                 .nodes
                 .get(cause)
                 .and_then(|node| node.attrs.get("reason"))
-                .and_then(exactly::<Reason>),
+                .and_then(|reason| Reason::deserialize(reason).ok())
+                // An unknown reason stays in the request's attributes.
+                .filter(|reason| *reason != Reason::Other),
             _ => None,
         };
         let counts = matches!(node.kind, Kind::Machine | Kind::Client).then(|| self.counts(id));
@@ -80,7 +80,7 @@ impl Tree {
             reason,
             cause,
             counts,
-            attrs: published(&node.attrs),
+            attrs: eywa_api::Attrs::exactly(&node.attrs),
         })
     }
 
@@ -100,48 +100,6 @@ impl Tree {
         }
         counts
     }
-}
-
-/// A node's attributes as a row publishes them. A documented attribute whose
-/// value the crate's type can't hold exactly, such as a string `pid`, stays
-/// in `other` as it is, so the row is still published and its JSON is the
-/// node's map.
-fn published(map: &Attrs) -> eywa_api::Attrs {
-    let mut attrs = eywa_api::Attrs::default();
-    for (key, value) in map {
-        let known = match key.as_str() {
-            "observes" => set(&mut attrs.observes, value),
-            "cwd" => set(&mut attrs.cwd, value),
-            "pid" => set(&mut attrs.pid, value),
-            "surface" => set(&mut attrs.surface, value),
-            "model" => set(&mut attrs.model, value),
-            "last_turn" => set(&mut attrs.last_turn, value),
-            "origin" => set(&mut attrs.origin, value),
-            "agent_type" => set(&mut attrs.agent_type, value),
-            "reason" => set(&mut attrs.reason, value),
-            "prompted" => set(&mut attrs.prompted, value),
-            "tool_name" => set(&mut attrs.tool_name, value),
-            "mcp_server" => set(&mut attrs.mcp_server, value),
-            _ => false,
-        };
-        if !known {
-            attrs.other.insert(key.clone(), value.clone());
-        }
-    }
-    attrs
-}
-
-/// Sets `field` from `value` if it holds the value exactly.
-fn set<T: Serialize + DeserializeOwned>(field: &mut Option<T>, value: &Value) -> bool {
-    *field = exactly(value);
-    field.is_some()
-}
-
-/// `value` as a `T`, if it decodes and encodes back to the same JSON. An
-/// enum value this version doesn't know would come back as `other`.
-fn exactly<T: Serialize + DeserializeOwned>(value: &Value) -> Option<T> {
-    let decoded = T::deserialize(value).ok()?;
-    (serde_json::to_value(&decoded).ok()? == *value).then_some(decoded)
 }
 
 #[cfg(test)]

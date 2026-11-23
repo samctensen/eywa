@@ -318,6 +318,8 @@ fn label(id: &str, row: &Row) -> (String, String) {
             (folder.unwrap_or("session").to_string(), format!(" {short}"))
         }
         "request" => {
+            // A reason from a newer Eywa arrives as `Other`, without its
+            // name, so it is drawn as a plain request.
             let reason = match row.attrs.reason {
                 Some(Reason::Approval) => "approval",
                 Some(Reason::Question) => "question",
