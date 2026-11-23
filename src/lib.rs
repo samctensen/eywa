@@ -11,5 +11,5 @@ pub mod registry;
 pub mod row;
 pub mod server;
 pub mod setup;
+pub mod top;
 pub mod tree;
-pub mod visualize;

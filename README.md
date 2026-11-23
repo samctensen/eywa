@@ -74,7 +74,7 @@ brew uninstall eywa
 | `eywa serve` | Runs the service in the foreground. `eywa start` does this for you. |
 | `eywa status` | Prints one snapshot and exits. |
 | `eywa watch` | Prints a snapshot, then every change, until ⌃C or Eywa stops. |
-| `eywa visualize` | A live, full-screen view of every agent. ⌃C quits. |
+| `eywa top` | A live, full-screen view of every agent. ⌃C quits. |
 | `eywa --version` | Prints the version. |
 
 `status` and `watch` print JSON lines in [the API's format](docs/api.md), and
