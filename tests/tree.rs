@@ -237,4 +237,19 @@ fn changes_report_only_what_changed() {
     close(&mut t, "/claude/session:s1/turn:p1", Outcome::Ok, 2);
     let changes = t.take_changes();
     assert!(changes.contains(&Change::Remove("/claude/session:s1/turn:p1".into())));
+
+    // An attribute named after the node opened is one upsert of that row;
+    // opening it again with what it already has publishes nothing.
+    let agent = "/claude/session:s1/turn:p2/agent:a1";
+    open(&mut t, agent, 3);
+    t.take_changes();
+    let typed = json!({"agent_type": "Explore"});
+    open_with(&mut t, agent, typed.clone(), 4);
+    match t.take_changes().as_slice() {
+        [Change::Upsert(row)] => assert_eq!(row.attrs, *typed.as_object().unwrap()),
+        other => panic!("expected one upsert: {other:?}"),
+    }
+    open_with(&mut t, agent, typed, 5);
+    open(&mut t, agent, 6);
+    assert!(t.take_changes().is_empty());
 }

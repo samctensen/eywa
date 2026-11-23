@@ -88,6 +88,15 @@ pub(crate) fn open_session(path: &str, record: &HookRecord) -> Event {
     open(path.to_string(), attrs)
 }
 
+/// One attribute holding a name the client stated, or none if it stated none.
+pub(crate) fn name_attr(key: &str, name: Option<&str>) -> Attrs {
+    let mut attrs = Attrs::new();
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        attrs.insert(key.into(), name.into());
+    }
+    attrs
+}
+
 /// A request id built from free text, such as an MCP server name, made safe
 /// to use as a path segment.
 pub(crate) fn request_key(prefix: &str, text: &str) -> String {
@@ -126,6 +135,15 @@ pub(crate) struct Actor {
     /// The root turn the actor works in.
     pub turn: String,
     pub path: String,
+    /// The subagent's type, when the record at hand names it.
+    pub agent_type: Option<String>,
+}
+
+impl Actor {
+    pub(crate) fn typed(mut self, agent_type: Option<&str>) -> Actor {
+        self.agent_type = agent_type.filter(|kind| !kind.is_empty()).map(String::from);
+        self
+    }
 }
 
 struct Request {
@@ -138,6 +156,7 @@ struct Request {
 struct Agent {
     turn: String,
     open: bool,
+    agent_type: Option<String>,
 }
 
 /// One session's bookkeeping.
@@ -174,6 +193,7 @@ impl Tracker {
             key: String::new(),
             path: turn_path(&self.session, &turn),
             turn,
+            agent_type: None,
         })
     }
 
@@ -192,6 +212,7 @@ impl Tracker {
             key: agent.to_string(),
             path: agent_path(&turn_path(&self.session, &turn), agent),
             turn,
+            agent_type: None,
         })
     }
 
@@ -265,10 +286,11 @@ impl Tracker {
 
     /// Opens the actor's node, or confirms it. Activity is proof the actor is
     /// running, so this reopens a turn or subagent that had closed. A
-    /// subagent's activity never reopens the root turn it belongs to.
+    /// subagent's activity never reopens the root turn it belongs to. A
+    /// subagent's type, once named, stays with it when it opens again.
     pub(crate) fn enter(&mut self, actor: &Actor, events: &mut Vec<Event>) {
-        events.push(open(actor.path.clone(), Attrs::new()));
         if actor.key.is_empty() {
+            events.push(open(actor.path.clone(), Attrs::new()));
             if self.open_turn.is_none() {
                 self.open_turn = Some(actor.turn.clone());
             }
@@ -281,8 +303,14 @@ impl Tracker {
             .or_insert_with(|| Agent {
                 turn: actor.turn.clone(),
                 open: true,
+                agent_type: None,
             });
         agent.open = true;
+        if actor.agent_type.is_some() {
+            agent.agent_type = actor.agent_type.clone();
+        }
+        let attrs = name_attr("agent_type", agent.agent_type.as_deref());
+        events.push(open(actor.path.clone(), attrs));
         // Opening the subagent opened its turn with it if the turn was gone.
         // The turn isn't running, and this is no news of how it ended.
         if self.open_turn.as_deref() != Some(actor.turn.as_str()) {
@@ -290,10 +318,16 @@ impl Tracker {
         }
     }
 
-    /// Starts (or restarts) a subagent.
-    pub(crate) fn start_agent(&mut self, agent: &str, turn: Option<&str>, events: &mut Vec<Event>) {
+    /// Starts (or restarts) a subagent, of `agent_type` when the client names it.
+    pub(crate) fn start_agent(
+        &mut self,
+        agent: &str,
+        turn: Option<&str>,
+        agent_type: Option<&str>,
+        events: &mut Vec<Event>,
+    ) {
         if let Some(actor) = self.agent(agent, turn) {
-            self.enter(&actor, events);
+            self.enter(&actor.typed(agent_type), events);
         }
     }
 
@@ -389,21 +423,33 @@ impl Tracker {
     }
 
     /// Opens a request under the actor, opening the actor first if needed.
+    /// `about` holds what the client says the request is for, such as the
+    /// tool it asks about.
     pub(crate) fn open_request(
         &mut self,
         actor: &Actor,
         id: &str,
         reason: Reason,
+        about: Attrs,
         at: Millis,
         events: &mut Vec<Event>,
     ) {
         self.enter(actor, events);
-        if self.requests.contains_key(id) {
+        if let Some(request) = self.requests.get(id) {
+            // The same actor asking again on an open request says what it is
+            // asking about now.
+            if request.actor == actor.key && !about.is_empty() {
+                events.push(Event::Attr {
+                    id: request.path.clone(),
+                    attrs: about,
+                });
+            }
             return;
         }
         let path = request_path(&actor.path, id);
         let mut attrs = Attrs::new();
         attrs.insert("reason".into(), reason.label().into());
+        attrs.extend(about);
         events.push(open(path.clone(), attrs));
         self.requests.insert(
             id.to_string(),

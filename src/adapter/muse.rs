@@ -6,7 +6,7 @@
 //! There is no interrupt hook; `ToolUseStart` reports a granted approval.
 
 use super::claude::approval_id;
-use super::{Adapter, Reason, Sessions, Tracker, close, open_session, session_path};
+use super::{Adapter, Reason, Sessions, Tracker, close, name_attr, open_session, session_path};
 use crate::record::HookRecord;
 use crate::tree::{Attribution, Attrs, Client, Detection, Event, Millis, Observes, Outcome};
 
@@ -85,14 +85,17 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
         "PermissionRequest" => {
             if let Some(actor) = &actor {
                 let id = approval_id(tracker, actor, record);
-                tracker.open_request(actor, &id, Reason::Approval, at, events);
+                let about = name_attr("tool_name", record.tool_name.as_deref());
+                tracker.open_request(actor, &id, Reason::Approval, about, at, events);
             }
         }
+        // The notification doesn't name a tool.
         "Notification" if record.notification_type.as_deref() == Some("permission_prompt") => {
             if tracker.has_requests() {
                 tracker.mark_prompted(events);
             } else if let Some(root) = tracker.root(None) {
-                tracker.open_request(&root, "prompt", Reason::Approval, at, events);
+                let about = Attrs::new();
+                tracker.open_request(&root, "prompt", Reason::Approval, about, at, events);
             }
         }
         // The approved call has started.
@@ -113,9 +116,10 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
                 tracker.enter(actor, events);
             }
         }
+        // Muse names a subagent's type only on hooks Eywa doesn't open it from.
         "SubagentStart" => {
             if let Some(child) = &record.agent_id {
-                tracker.start_agent(child, None, events);
+                tracker.start_agent(child, None, None, events);
             }
         }
         "SubagentStop" => {

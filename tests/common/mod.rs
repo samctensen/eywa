@@ -134,6 +134,37 @@ pub fn wait_for_states(
     }
 }
 
+/// Reads messages, keeping each row by id, until `done` holds. Only rows
+/// that arrive during this call are kept.
+pub fn wait_for_rows(
+    reader: &mut impl BufRead,
+    done: impl Fn(&std::collections::HashMap<String, serde_json::Value>) -> bool,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let deadline = Instant::now() + WAIT;
+    let mut rows = std::collections::HashMap::new();
+    let id = |row: &serde_json::Value| row["id"].as_str().unwrap().to_string();
+    loop {
+        assert!(Instant::now() < deadline, "timed out: {rows:?}");
+        let message = next_json(reader);
+        match message["type"].as_str().unwrap() {
+            "snapshot" => {
+                let snapshot = message["rows"].as_array().unwrap();
+                rows = snapshot.iter().map(|row| (id(row), row.clone())).collect();
+            }
+            "upsert" => {
+                rows.insert(id(&message["row"]), message["row"].clone());
+            }
+            "remove" => {
+                rows.remove(message["id"].as_str().unwrap());
+            }
+            _ => {}
+        }
+        if done(&rows) {
+            return rows;
+        }
+    }
+}
+
 /// Repeats a `get` until its snapshot satisfies `done`.
 pub fn wait_for_snapshot(
     dir: &Path,

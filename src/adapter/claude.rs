@@ -2,7 +2,8 @@
 //! and `docs/research/anthropic.md`.
 
 use super::{
-    Actor, Adapter, Reason, Sessions, Tracker, close, open, open_session, request_key, session_path,
+    Actor, Adapter, Reason, Sessions, Tracker, close, name_attr, open, open_session, request_key,
+    session_path,
 };
 use crate::record::{HookRecord, claude_surface};
 use crate::registry::{SessionState, Status};
@@ -161,8 +162,10 @@ impl Adapter for ClaudeAdapter {
                 if tracker.has_requests() {
                     tracker.mark_prompted(&mut events);
                 } else if let Some(actor) = actor {
+                    // The registry says what kind of input, never which tool.
                     let reason = waiting_reason(reason.as_deref());
-                    tracker.open_request(&actor, "waiting", reason, at, &mut events);
+                    let about = Attrs::new();
+                    tracker.open_request(&actor, "waiting", reason, about, at, &mut events);
                 }
             }
             // Idle with a turn still open: the turn was interrupted, an
@@ -258,9 +261,11 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
             Some("idle_prompt") => tracker.end_turn(None, Outcome::Cancelled, events),
             Some("permission_prompt") if tracker.has_requests() => tracker.mark_prompted(events),
             // A prompt no hook announced, such as a sandbox network approval.
+            // The notification doesn't name a tool.
             Some("permission_prompt") => {
                 if let Some(actor) = &actor {
-                    tracker.open_request(actor, "prompt", Reason::Approval, at, events);
+                    let about = Attrs::new();
+                    tracker.open_request(actor, "prompt", Reason::Approval, about, at, events);
                 }
             }
             Some("elicitation_complete" | "elicitation_response") => {
@@ -268,9 +273,11 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
             }
             _ => {}
         },
+        // Only the start names the agent's own type: `SubagentStop` can name
+        // the session's agent instead, for Claude's internal agents.
         "SubagentStart" => {
             if let Some(agent) = &record.agent_id {
-                tracker.start_agent(agent, turn, events);
+                tracker.start_agent(agent, turn, record.agent_type.as_deref(), events);
             }
         }
         "SubagentStop" | "TeammateIdle" => {
@@ -284,8 +291,9 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
                 tracker.answer_approvals(actor, at, events);
                 tracker.remember_call(actor, record.digest.as_deref(), tool_use_id);
                 match (record.tool_name.as_deref(), tool_use_id) {
-                    (Some("AskUserQuestion"), Some(id)) => {
-                        tracker.open_request(actor, id, Reason::Question, at, events);
+                    (Some(tool @ "AskUserQuestion"), Some(id)) => {
+                        let about = name_attr("tool_name", Some(tool));
+                        tracker.open_request(actor, id, Reason::Question, about, at, events);
                     }
                     _ => tracker.enter(actor, events),
                 }
@@ -294,7 +302,8 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
         "PermissionRequest" => {
             if let Some(actor) = &actor {
                 let id = approval_id(tracker, actor, record);
-                tracker.open_request(actor, &id, Reason::Approval, at, events);
+                let about = name_attr("tool_name", record.tool_name.as_deref());
+                tracker.open_request(actor, &id, Reason::Approval, about, at, events);
             }
         }
         "PostToolUse" | "PostToolUseFailure" => {
@@ -322,7 +331,8 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
         "Elicitation" => {
             if let Some(actor) = &actor {
                 let id = elicitation_id(record);
-                tracker.open_request(actor, &id, Reason::McpInput, at, events);
+                let about = name_attr("mcp_server", record.mcp_server.as_deref());
+                tracker.open_request(actor, &id, Reason::McpInput, about, at, events);
             }
         }
         "ElicitationResult" => tracker.close_request(&elicitation_id(record), Outcome::Ok, events),

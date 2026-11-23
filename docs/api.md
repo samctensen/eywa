@@ -204,7 +204,7 @@ agent process is running that Eywa hasn't heard from yet.
 Each kind has its own attributes. Any of them can be missing when the client
 doesn't report it.
 
-#### Machine, process, agent
+#### Machine, process
 
 No attributes yet. `attrs` is `{}`.
 
@@ -248,12 +248,40 @@ prompts.
 | --- | --- | --- |
 | `origin` | string | Claude Code only. `person`: you sent the prompt. `machine`: something else did, for example a background task reporting back. |
 
+#### Agent
+
+| Attribute | Type | Meaning |
+| --- | --- | --- |
+| `agent_type` | string | The kind of subagent, as the client names it: a built-in type such as `Explore`, or the name of an agent you defined. Missing until the client names it, so it can arrive in a later `upsert` of the row. |
+
+Where each client names it:
+
+| Client | `agent_type` |
+| --- | --- |
+| `claude` | When the subagent starts or resumes. A subagent Eywa first hears of through its work, for example after Eywa restarts, has none until it starts again. |
+| `codex` | On everything the subagent does: its role. |
+| `grok` | From the subagent's own hooks, not from the one that starts it, so it arrives in an `upsert` just after the row appears, once the subagent first acts. |
+| `muse` | Never. Muse doesn't name a subagent's type when it starts or works. |
+
 #### Request
 
 | Attribute | Type | Meaning |
 | --- | --- | --- |
 | `reason` | string | `approval`, `question` or `mcp_input`. Always present. |
 | `prompted` | boolean | `true` once the client confirms it's showing the request to you. Some clients run an automatic reviewer before asking a person, so an approval without it may be decided without you. |
+| `tool_name` | string | The tool the request is for, as the client names it: for an approval, the tool waiting to run, such as `Bash` or `mcp__github__create_issue`; for a question, the client's question tool. Missing when the client doesn't say which tool; Eywa never guesses. |
+| `mcp_server` | string | On `mcp_input` requests: the MCP server asking. Missing when the client doesn't say. |
+
+These are names only. A tool's input never reaches Eywa.
+
+Where each client names them:
+
+| Client | `tool_name` | `mcp_server` |
+| --- | --- | --- |
+| `claude` | Approvals and questions, except an approval Claude announces only as a notification, such as a sandbox network request, and a request Eywa learns of only from Claude's session status, for example after Eywa restarts. | MCP input requests, with the same exception for session status. |
+| `codex` | Approvals and questions. | MCP input isn't visible. |
+| `grok` | Questions only. Grok announces an approval without naming its tool. | MCP input isn't visible. |
+| `muse` | Approvals, except one Eywa learns of only from Muse's "waiting for approval" notification, for example after Eywa restarts. | MCP input isn't visible. |
 
 A request row's top-level `reason` is only there while its state is
 `needs_input`. Read `attrs.reason` instead when listing requests, since it's
@@ -355,9 +383,14 @@ export interface Attrs {
   last_turn?: { outcome: Outcome; ended_at: string };
   /** Turn, Claude Code only. */
   origin?: "person" | "machine";
+  /** Agent. */
+  agent_type?: string;
   /** Request. */
   reason?: Reason;
   prompted?: boolean;
+  tool_name?: string;
+  /** Request, mcp_input only. */
+  mcp_server?: string;
   [attribute: string]: unknown;
 }
 
