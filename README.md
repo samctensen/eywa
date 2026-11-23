@@ -250,6 +250,7 @@ since version 1 can add them.
 present, TypeScript types, and complete subscribers in Python and TypeScript.
 [docs/api-v1.schema.json](docs/api-v1.schema.json) is the same contract as a
 JSON Schema, for validating messages or generating types.
+Rust programs can decode it with the [`eywa-api`](eywa-api) crate: see [Rust](docs/api.md#rust).
 
 ## Command line
 

@@ -271,14 +271,14 @@ fn questions_and_mcp_input_are_requests() {
         ),
     ]);
     let row = t.rows().into_iter().find(|r| r.id == "/claude").unwrap();
-    assert_eq!(row.reason.as_deref(), Some("question"));
+    assert_eq!(row.reason, Some(eywa_api::Reason::Question));
 
     let t = claude(&[
         ("UserPromptSubmit", json!({})),
         ("Elicitation", json!({"elicitation_id": "e1"})),
     ]);
     let row = t.rows().into_iter().find(|r| r.id == "/claude").unwrap();
-    assert_eq!(row.reason.as_deref(), Some("mcp_input"));
+    assert_eq!(row.reason, Some(eywa_api::Reason::McpInput));
 }
 
 /// One thread's hooks arrive in order, so activity under a closed node's own
@@ -936,7 +936,7 @@ fn sessions_name_their_model() {
     match changes[2].as_slice() {
         [Change::Upsert(row)] => {
             assert_eq!(row.id, "/codex/session:s1");
-            assert_eq!(row.attrs["model"], "m3");
+            assert_eq!(row.attrs.model.as_deref(), Some("m3"));
         }
         other => panic!("expected one upsert: {other:?}"),
     }
@@ -971,7 +971,7 @@ fn a_type_named_later_is_published_once() {
     match changes[2].as_slice() {
         [Change::Upsert(row)] => {
             assert_eq!(row.id, agent);
-            assert_eq!(row.attrs["agent_type"], "explore");
+            assert_eq!(row.attrs.agent_type.as_deref(), Some("explore"));
         }
         other => panic!("expected one upsert: {other:?}"),
     }

@@ -246,7 +246,7 @@ fn changes_report_only_what_changed() {
     let typed = json!({"agent_type": "Explore"});
     open_with(&mut t, agent, typed.clone(), 4);
     match t.take_changes().as_slice() {
-        [Change::Upsert(row)] => assert_eq!(row.attrs, *typed.as_object().unwrap()),
+        [Change::Upsert(row)] => assert_eq!(serde_json::to_value(&row.attrs).unwrap(), typed),
         other => panic!("expected one upsert: {other:?}"),
     }
     open_with(&mut t, agent, typed, 5);

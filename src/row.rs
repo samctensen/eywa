@@ -1,36 +1,15 @@
 //! Rows: the published view of each node, and the changes between views.
 
-use crate::tree::{Attrs, Kind, Millis, State, Tree, rfc3339};
-use serde::{Serialize, Serializer};
+use crate::tree::{Kind, State, Tree, rfc3339};
+use eywa_api::Reason;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct Row {
-    pub id: String,
-    pub kind: Kind,
-    pub state: State,
-    #[serde(serialize_with = "serialize_time")]
-    pub since: Millis,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cause: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub counts: Option<Counts>,
-    pub attrs: Attrs,
-}
-
-/// Open sessions beneath a machine or client row, in total and by state.
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
-pub struct Counts {
-    pub sessions: u32,
-    pub needs_input: u32,
-    pub working: u32,
-    pub unknown: u32,
-    pub idle: u32,
-}
+pub use eywa_api::{Counts, Row};
 
 #[derive(Clone, Debug, PartialEq)]
+// A change lives only until it is published.
+#[allow(clippy::large_enum_variant)]
 pub enum Change {
     Upsert(Row),
     Remove(String),
@@ -43,10 +22,6 @@ impl Change {
             Change::Remove(id) => id,
         }
     }
-}
-
-fn serialize_time<S: Serializer>(at: &Millis, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&rfc3339(*at))
 }
 
 impl Tree {
@@ -91,8 +66,9 @@ impl Tree {
                 .nodes
                 .get(cause)
                 .and_then(|node| node.attrs.get("reason"))
-                .and_then(|reason| reason.as_str())
-                .map(String::from),
+                .and_then(|reason| Reason::deserialize(reason).ok())
+                // An unknown reason stays in the request's attributes.
+                .filter(|reason| *reason != Reason::Other),
             _ => None,
         };
         let counts = matches!(node.kind, Kind::Machine | Kind::Client).then(|| self.counts(id));
@@ -100,11 +76,11 @@ impl Tree {
             id: id.to_string(),
             kind: node.kind,
             state,
-            since,
+            since: rfc3339(since),
             reason,
             cause,
             counts,
-            attrs: node.attrs.clone(),
+            attrs: eywa_api::Attrs::exactly(&node.attrs),
         })
     }
 
@@ -119,9 +95,52 @@ impl Tree {
                 Some(State::NeedsInput) => counts.needs_input += 1,
                 Some(State::Working) => counts.working += 1,
                 Some(State::Unknown) => counts.unknown += 1,
-                Some(State::Idle) | None => counts.idle += 1,
+                Some(State::Idle | State::Other) | None => counts.idle += 1,
             }
         }
         counts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{Approvals, Client, Event, Interrupts, Observes, STALE_AFTER};
+    use serde_json::json;
+
+    #[test]
+    fn attrs_with_unexpected_types_keep_the_row() {
+        let client = Client {
+            name: "claude",
+            observes: Observes {
+                agents: true,
+                approvals: Approvals::Actor,
+                questions: true,
+                mcp_input: true,
+                interrupts: Interrupts::Inferred,
+            },
+        };
+        let mut tree = Tree::new(&[client], STALE_AFTER, 0);
+        let session = "/claude/session:s1";
+        let attrs = json!({"pid": "not a number", "cwd": "/tmp"});
+        tree.apply(
+            Event::Open {
+                id: session.into(),
+                attrs: attrs.as_object().unwrap().clone(),
+            },
+            1,
+        );
+        let row = tree
+            .rows()
+            .into_iter()
+            .find(|row| row.id == session)
+            .expect("the row is published");
+        assert_eq!(row.attrs.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(row.attrs.pid, None);
+        assert_eq!(row.attrs.other["pid"], "not a number");
+        assert_eq!(serde_json::to_value(&row.attrs).unwrap(), attrs);
+        // A consumer reads back the same attributes the server published.
+        let decoded: eywa_api::Attrs = serde_json::from_value(attrs).unwrap();
+        assert_eq!(decoded, row.attrs);
     }
 }

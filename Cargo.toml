@@ -14,7 +14,13 @@ path = "src/lib.rs"
 name = "eywa"
 path = "src/main.rs"
 
+[workspace]
+members = ["eywa-api"]
+# So `cargo test` and `cargo clippy` cover the API crate too.
+default-members = [".", "eywa-api"]
+
 [dependencies]
+eywa-api = { path = "eywa-api" }
 humantime = "2"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

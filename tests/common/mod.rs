@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use eywa::tree::{
-    Attribution, Client, Detection, Event, Millis, Observes, Outcome, STALE_AFTER, Tree,
+    Approvals, Client, Event, Interrupts, Millis, Observes, Outcome, STALE_AFTER, Tree,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -17,10 +17,10 @@ pub const CLAUDE: Client = Client {
     name: "claude",
     observes: Observes {
         agents: true,
-        approvals: Attribution::Actor,
+        approvals: Approvals::Actor,
         questions: true,
         mcp_input: true,
-        interrupts: Detection::Inferred,
+        interrupts: Interrupts::Inferred,
     },
 };
 

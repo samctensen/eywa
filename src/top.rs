@@ -2,7 +2,7 @@
 //! terminal as it changes.
 
 use crate::tree::Millis;
-use serde_json::Value;
+use eywa_api::{Message, Reason, Request, Row, State};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -13,11 +13,10 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Rows by id, as the subscription last described them.
-pub type Rows = BTreeMap<String, Value>;
+pub type Rows = BTreeMap<String, Row>;
 
 const FRAME: Millis = 100;
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const STATES: [&str; 4] = ["needs_input", "working", "unknown", "idle"];
 
 const PLAIN: &str = "";
 const BOLD: &str = "\x1b[1m";
@@ -44,11 +43,12 @@ extern "C" fn stop(_: libc::c_int) {
 /// Subscribes to everything on `stream` and redraws the view until Ctrl-C,
 /// or until the service goes away.
 pub fn run(mut stream: UnixStream) -> io::Result<()> {
-    writeln!(stream, r#"{{"v":1,"op":"subscribe","path":"/","depth":8}}"#)?;
+    let request = serde_json::to_string(&Request::subscribe("/", 8))?;
+    writeln!(stream, "{request}")?;
     let (sender, messages) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            if let Ok(message) = serde_json::from_str::<Value>(&line)
+            if let Ok(message) = serde_json::from_str::<Message>(&line)
                 && sender.send(message).is_err()
             {
                 break;
@@ -70,7 +70,7 @@ pub fn run(mut stream: UnixStream) -> io::Result<()> {
     result
 }
 
-fn animate(messages: &mpsc::Receiver<Value>, out: &mut impl Write) -> io::Result<()> {
+fn animate(messages: &mpsc::Receiver<Message>, out: &mut impl Write) -> io::Result<()> {
     let mut rows = Rows::new();
     while !STOP.load(Ordering::Relaxed) {
         let wait = FRAME - now() % FRAME;
@@ -105,33 +105,22 @@ fn animate(messages: &mpsc::Receiver<Value>, out: &mut impl Write) -> io::Result
     Ok(())
 }
 
-fn apply(rows: &mut Rows, mut message: Value) -> io::Result<()> {
-    match message["type"].as_str() {
-        Some("snapshot") => {
+fn apply(rows: &mut Rows, message: Message) -> io::Result<()> {
+    match message {
+        Message::Snapshot { rows: list, .. } => {
             rows.clear();
-            if let Value::Array(list) = message["rows"].take() {
-                list.into_iter().for_each(|row| insert(rows, row));
-            }
+            rows.extend(list.into_iter().map(|row| (row.id.clone(), row)));
         }
-        Some("upsert") => insert(rows, message["row"].take()),
-        Some("remove") => {
-            if let Some(id) = message["id"].as_str() {
-                rows.remove(id);
-            }
+        Message::Upsert { row, .. } => {
+            rows.insert(row.id.clone(), row);
         }
-        Some("error") => {
-            let reason = message["message"].as_str().unwrap_or("request refused");
-            return Err(io::Error::other(reason.to_string()));
+        Message::Remove { id, .. } => {
+            rows.remove(&id);
         }
-        _ => {}
+        Message::Error { message, .. } => return Err(io::Error::other(message)),
+        Message::Stopping | Message::Other => {}
     }
     Ok(())
-}
-
-fn insert(rows: &mut Rows, row: Value) {
-    if let Some(id) = row["id"].as_str().map(String::from) {
-        rows.insert(id, row);
-    }
 }
 
 /// Draws `rows` as they stand at `now`, each line at most `width` columns.
@@ -183,7 +172,7 @@ impl<'a> View<'a> {
             if *parent != "/" {
                 list.sort_by_cached_key(|id| {
                     let row = &rows[*id];
-                    (state(row) != "needs_input", Reverse(since(row)), *id)
+                    (state(row) != State::NeedsInput, Reverse(since(row)), *id)
                 });
             }
         }
@@ -204,15 +193,20 @@ impl<'a> View<'a> {
         let Some(machine) = self.rows.get("/") else {
             return line.add(DIM, " · connecting…");
         };
-        let counts = &machine["counts"];
-        let sessions = counts["sessions"].as_u64().unwrap_or(0);
+        let counts = machine.counts.unwrap_or_default();
+        let sessions = counts.sessions;
         let plural = if sessions == 1 { "" } else { "s" };
         let mut line = line.add(DIM, format!(" · {sessions} session{plural}"));
-        for state in STATES {
-            let count = counts[state].as_u64().unwrap_or(0);
+        let by_state = [
+            (State::NeedsInput, counts.needs_input),
+            (State::Working, counts.working),
+            (State::Unknown, counts.unknown),
+            (State::Idle, counts.idle),
+        ];
+        for (state, count) in by_state {
             if count > 0 {
                 let what = match state {
-                    "needs_input" if count > 1 => "need you",
+                    State::NeedsInput if count > 1 => "need you",
                     _ => word(state),
                 };
                 line = line
@@ -254,7 +248,7 @@ impl<'a> View<'a> {
                     .add(DIM, format!("{indent}{}", if last { "└─ " } else { "├─ " }))
                     .add(color(state), self.glyph(state))
                     .add(
-                        if state == "idle" { DIM } else { PLAIN },
+                        if state == State::Idle { DIM } else { PLAIN },
                         format!(" {name}"),
                     )
                     .add(DIM, detail),
@@ -264,18 +258,18 @@ impl<'a> View<'a> {
                         .add(DIM, format!("  {:>7}", elapsed(row, self.now))),
                 ),
             });
-            if state != "idle" {
+            if state != State::Idle {
                 let indent = format!("{indent}{}", if last { "   " } else { "│  " });
                 self.branches(self.children(id), &indent, entries);
             }
         }
     }
 
-    fn glyph(&self, state: &str) -> &'static str {
+    fn glyph(&self, state: State) -> &'static str {
         match state {
-            "needs_input" => "◆",
-            "working" => SPINNER[self.frame % SPINNER.len()],
-            "unknown" => "?",
+            State::NeedsInput => "◆",
+            State::Working => SPINNER[self.frame % SPINNER.len()],
+            State::Unknown => "?",
             _ => "○",
         }
     }
@@ -283,43 +277,56 @@ impl<'a> View<'a> {
 
 /// What needs you is bold yellow and work is green; everything else is dim.
 /// These are the terminal's own colors, so its theme decides the shades.
-fn color(state: &str) -> &'static str {
+fn color(state: State) -> &'static str {
     match state {
-        "needs_input" => "\x1b[1;33m",
-        "working" => "\x1b[32m",
+        State::NeedsInput => "\x1b[1;33m",
+        State::Working => "\x1b[32m",
         _ => DIM,
     }
 }
 
-fn state(row: &Value) -> &str {
-    row["state"].as_str().unwrap_or("unknown")
+/// A row's state. One from a newer Eywa is drawn as `unknown`.
+fn state(row: &Row) -> State {
+    match row.state {
+        State::Other => State::Unknown,
+        state => state,
+    }
 }
 
-fn word(state: &str) -> &'static str {
+fn word(state: State) -> &'static str {
     match state {
-        "needs_input" => "needs you",
-        "working" => "working",
-        "idle" => "idle",
+        State::NeedsInput => "needs you",
+        State::Working => "working",
+        State::Idle => "idle",
         _ => "unknown",
     }
 }
 
 /// A node's name and a dim detail after it, such as a session's folder and
 /// short id.
-fn label(id: &str, row: &Value) -> (String, String) {
+fn label(id: &str, row: &Row) -> (String, String) {
     let segment = id.rsplit('/').next().unwrap_or(id);
     let (kind, key) = segment.split_once(':').unwrap_or((segment, ""));
     let short: String = key.chars().take(8).collect();
     match kind {
         "session" => {
-            let folder = row["attrs"]["cwd"]
-                .as_str()
+            let folder = row
+                .attrs
+                .cwd
+                .as_deref()
                 .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()));
             (folder.unwrap_or("session").to_string(), format!(" {short}"))
         }
         "request" => {
-            let reason = row["attrs"]["reason"].as_str().unwrap_or("request");
-            (reason.replace('_', " "), String::new())
+            // A reason from a newer Eywa arrives as `Other`, without its
+            // name, so it is drawn as a plain request.
+            let reason = match row.attrs.reason {
+                Some(Reason::Approval) => "approval",
+                Some(Reason::Question) => "question",
+                Some(Reason::McpInput) => "mcp input",
+                _ => "request",
+            };
+            (reason.to_string(), String::new())
         }
         _ if short.is_empty() => (kind.to_string(), String::new()),
         _ => (kind.to_string(), format!(" {short}")),
@@ -327,12 +334,12 @@ fn label(id: &str, row: &Value) -> (String, String) {
 }
 
 /// When the row entered its current state.
-fn since(row: &Value) -> Option<Millis> {
-    let since = humantime::parse_rfc3339(row["since"].as_str()?).ok()?;
+fn since(row: &Row) -> Option<Millis> {
+    let since = humantime::parse_rfc3339(&row.since).ok()?;
     Some(since.duration_since(UNIX_EPOCH).ok()?.as_millis() as Millis)
 }
 
-fn elapsed(row: &Value, now: Millis) -> String {
+fn elapsed(row: &Row, now: Millis) -> String {
     let Some(since) = since(row) else {
         return String::new();
     };
@@ -432,5 +439,36 @@ fn terminal_size() -> (usize, usize) {
         (usize::from(size.ws_col), usize::from(size.ws_row))
     } else {
         (80, 24)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(line: &str) -> Message {
+        serde_json::from_str(line).unwrap()
+    }
+
+    /// A newer Eywa's message types, fields and states leave the view drawing
+    /// what it knows.
+    #[test]
+    fn top_ignores_unknown_messages() {
+        let mut rows = Rows::new();
+        apply(&mut rows, message(r#"{"v":1,"type":"heartbeat"}"#)).unwrap();
+        let client = r#"{"v":1,"type":"upsert","rev":1,"row":{"id":"/claude","kind":"client",
+            "state":"idle","since":"2026-11-18T20:00:00.000Z","attrs":{}}}"#;
+        apply(&mut rows, message(client)).unwrap();
+        let session = r#"{"v":1,"type":"upsert","rev":2,"row":{"id":"/claude/session:s1",
+            "kind":"session","state":"sleeping","since":"2026-11-18T20:00:00.000Z","glow":1,
+            "attrs":{"cwd":"/src/eywa","colour":"red"}}}"#;
+        apply(&mut rows, message(session)).unwrap();
+        let screen = render(&rows, 0, 80);
+        assert!(screen.contains("claude"), "{screen}");
+        let line = screen
+            .lines()
+            .find(|line| line.contains("eywa") && line.contains("s1"))
+            .unwrap_or_else(|| panic!("no session line\n{screen}"));
+        assert!(line.contains("unknown"), "renders like unknown\n{screen}");
     }
 }

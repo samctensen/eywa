@@ -32,8 +32,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use crate::hook::{INGEST_SOCKET, default_dir};
+pub use eywa_api::API_SOCKET;
 
-pub const API_SOCKET: &str = "api.sock";
 pub const SUBSCRIBER_QUEUE: usize = 256;
 
 const RECEIVE_BUFFER_BYTES: libc::c_int = 262_144;
@@ -394,7 +394,7 @@ impl Core {
                     .into_iter()
                     .filter(|row| request.selection.includes(&row.id))
                     .collect();
-                let _ = sender.send(snapshot_line(self.rev, &selected));
+                let _ = sender.send(snapshot_line(self.rev, selected));
                 receiver
             }
             Op::Stop => {
@@ -402,6 +402,7 @@ impl Core {
                 let _ = sender.send(stopping_line());
                 receiver
             }
+            Op::Other => unreachable!("the server never produces Other"),
         }
     }
 

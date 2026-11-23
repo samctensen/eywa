@@ -106,6 +106,90 @@ fn rows_name_the_tool_and_the_agent_type() {
     assert_eq!(rows[agent]["state"], "needs_input");
 }
 
+/// Everything the server writes decodes as an `eywa_api::Message` and encodes
+/// back to the same JSON.
+#[test]
+fn every_published_line_round_trips() {
+    use std::io::BufRead;
+    let dir = temp_dir("trip");
+    let _service = start(dir.path());
+    let read_line = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        line
+    };
+    let mut watcher = connect(
+        dir.path(),
+        r#"{"v":1,"op":"subscribe","path":"/","depth":64}"#,
+    );
+    // The snapshot comes first, so everything after it arrives as changes.
+    let mut lines = vec![read_line(&mut watcher)];
+    let session = "/claude/session:s1";
+    send(
+        dir.path(),
+        json!({"event": "UserPromptSubmit", "source": "user", "cwd": "/repo",
+               "surface": "cli", "model": "claude-opus-4"}),
+    );
+    send(
+        dir.path(),
+        json!({"event": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
+    );
+    send(
+        dir.path(),
+        json!({"event": "PermissionRequest", "agent_id": "a1", "tool_name": "Bash", "digest": "d1"}),
+    );
+    send(
+        dir.path(),
+        json!({"event": "SubagentStop", "agent_id": "a1"}),
+    );
+    send(dir.path(), json!({"event": "Stop"}));
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        assert!(std::time::Instant::now() < deadline, "timed out: {lines:?}");
+        let line = read_line(&mut watcher);
+        let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+        lines.push(line);
+        if message["row"]["id"] == session && message["row"]["attrs"]["last_turn"].is_object() {
+            break;
+        }
+    }
+    lines.push(read_line(&mut connect(dir.path(), "not json")));
+    lines.push(read_line(&mut connect(
+        dir.path(),
+        r#"{"v":1,"op":"stop"}"#,
+    )));
+
+    let mut types = std::collections::BTreeSet::new();
+    let mut kinds = std::collections::BTreeSet::new();
+    for line in &lines {
+        let message: eywa_api::Message =
+            serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line:?}"));
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            serde_json::from_str::<serde_json::Value>(line).unwrap(),
+            "{line}"
+        );
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        types.insert(value["type"].as_str().unwrap().to_string());
+        match message {
+            eywa_api::Message::Snapshot { rows, .. } => {
+                kinds.extend(rows.iter().map(|row| format!("{:?}", row.kind)));
+            }
+            eywa_api::Message::Upsert { row, .. } => {
+                kinds.insert(format!("{:?}", row.kind));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        types.into_iter().collect::<Vec<_>>(),
+        ["error", "remove", "snapshot", "stopping", "upsert"]
+    );
+    for kind in ["Machine", "Client", "Session", "Turn", "Agent", "Request"] {
+        assert!(kinds.contains(kind), "no {kind} row in {lines:?}");
+    }
+}
+
 #[test]
 fn silence_turns_work_unknown() {
     let dir = temp_dir("stale");
@@ -143,6 +227,40 @@ fn bad_input_is_ignored() {
 
     let reply = next_json(&mut connect(dir.path(), "not json"));
     assert_eq!(reply["type"], "error");
+}
+
+/// A rejected request gets exactly the line it always has.
+#[test]
+fn request_errors_stay_byte_for_byte() {
+    use std::io::BufRead;
+    let dir = temp_dir("errors");
+    let _service = start(dir.path());
+    let bad = |message: &str| {
+        format!(r#"{{"v":1,"type":"error","code":"bad_request","message":"{message}"}}"#)
+    };
+    let cases = [
+        ("not json", bad("request is not JSON")),
+        ("[1]", bad("request is not an object")),
+        (
+            r#"{"v":2,"op":"get"}"#,
+            r#"{"v":1,"type":"error","code":"unsupported_version","message":"only version 1 is supported"}"#.to_string(),
+        ),
+        (r#"{"v":1,"op":"watch"}"#, bad("op must be get, subscribe or stop")),
+        (
+            r#"{"v":1,"op":"get","path":"claude"}"#,
+            bad("path must be a node path such as /claude"),
+        ),
+        (
+            r#"{"v":1,"op":"get","depth":-1}"#,
+            bad("depth must be a non-negative integer"),
+        ),
+        (r#"{"v":1,"op":"get","view":"rows"}"#, bad("unknown view")),
+    ];
+    for (request, expected) in cases {
+        let mut line = String::new();
+        connect(dir.path(), request).read_line(&mut line).unwrap();
+        assert_eq!(line, format!("{expected}\n"), "{request}");
+    }
 }
 
 #[test]
@@ -513,8 +631,9 @@ fn top_draws_the_tree() {
         row("/codex", "client", "idle", json!({})),
     ]
     .into_iter()
+    .map(|(id, row)| (id, serde_json::from_value(row).unwrap()))
     .collect::<eywa::top::Rows>();
-    rows.get_mut("/claude/session:s5").unwrap()["since"] = json!("2026-11-18T20:01:00.000Z");
+    rows.get_mut("/claude/session:s5").unwrap().since = "2026-11-18T20:01:00.000Z".into();
     let now = humantime::parse_rfc3339("2026-11-18T20:02:05Z").unwrap();
     let now = now
         .duration_since(std::time::UNIX_EPOCH)
