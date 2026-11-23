@@ -8,16 +8,16 @@
 use super::claude::approval_id;
 use super::{Adapter, Reason, Sessions, Tracker, close, name_attr, open_session, session_path};
 use crate::record::HookRecord;
-use crate::tree::{Attribution, Attrs, Client, Detection, Event, Millis, Observes, Outcome};
+use crate::tree::{Approvals, Attrs, Client, Event, Interrupts, Millis, Observes, Outcome};
 
 const CLIENT: Client = Client {
     name: "muse",
     observes: Observes {
         agents: true,
-        approvals: Attribution::Actor,
+        approvals: Approvals::Actor,
         questions: false,
         mcp_input: false,
-        interrupts: Detection::Inferred,
+        interrupts: Interrupts::Inferred,
     },
 };
 

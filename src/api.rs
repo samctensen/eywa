@@ -5,12 +5,7 @@ use crate::tree::{Kind, kind_of};
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Op {
-    Get,
-    Subscribe,
-    Stop,
-}
+pub use eywa_api::Op;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Selection {

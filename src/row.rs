@@ -119,7 +119,7 @@ impl Tree {
                 Some(State::NeedsInput) => counts.needs_input += 1,
                 Some(State::Working) => counts.working += 1,
                 Some(State::Unknown) => counts.unknown += 1,
-                Some(State::Idle) | None => counts.idle += 1,
+                Some(State::Idle | State::Other) | None => counts.idle += 1,
             }
         }
         counts

@@ -116,21 +116,15 @@ pub(crate) fn request_key(prefix: &str, text: &str) -> String {
     key
 }
 
-/// Why a request is waiting on the user.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Reason {
-    Approval,
-    Question,
-    McpInput,
-}
+pub(crate) use eywa_api::Reason;
 
-impl Reason {
-    fn label(self) -> &'static str {
-        match self {
-            Reason::Approval => "approval",
-            Reason::Question => "question",
-            Reason::McpInput => "mcp_input",
-        }
+/// A request's `reason` attribute.
+fn label(reason: Reason) -> &'static str {
+    match reason {
+        Reason::Approval => "approval",
+        Reason::Question => "question",
+        Reason::McpInput => "mcp_input",
+        Reason::Other => unreachable!("the server never produces Other"),
     }
 }
 
@@ -456,7 +450,7 @@ impl Tracker {
         }
         let path = request_path(&actor.path, id);
         let mut attrs = Attrs::new();
-        attrs.insert("reason".into(), reason.label().into());
+        attrs.insert("reason".into(), label(reason).into());
         attrs.extend(about);
         events.push(open(path.clone(), attrs));
         self.requests.insert(

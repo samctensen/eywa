@@ -8,7 +8,7 @@ use super::{
 use crate::record::{HookRecord, claude_surface};
 use crate::registry::{SessionState, Status};
 use crate::tree::{
-    Attribution, Attrs, Client, Detection, Event, Millis, Observes, Outcome, last_turn,
+    Approvals, Attrs, Client, Event, Interrupts, Millis, Observes, Outcome, last_turn,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -16,10 +16,10 @@ const CLIENT: Client = Client {
     name: "claude",
     observes: Observes {
         agents: true,
-        approvals: Attribution::Actor,
+        approvals: Approvals::Actor,
         questions: true,
         mcp_input: true,
-        interrupts: Detection::Inferred,
+        interrupts: Interrupts::Inferred,
     },
 };
 

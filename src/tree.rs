@@ -4,8 +4,9 @@
 //! `/claude/session:7f3a/turn:12/agent:a2/request:t9`. The machine is `/` and
 //! each client is `/<name>`; every deeper segment is `kind:id`.
 
-use serde::Serialize;
 use std::collections::BTreeMap;
+
+pub use eywa_api::{Approvals, Interrupts, Kind, Observes, Outcome, State};
 
 /// Milliseconds since the Unix epoch.
 pub type Millis = u64;
@@ -16,64 +17,34 @@ pub const STALE_AFTER: Millis = 3_600_000;
 
 pub type Attrs = serde_json::Map<String, serde_json::Value>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    Machine,
-    Client,
-    Process,
-    Session,
-    Turn,
-    Agent,
-    Request,
+/// The kind a path segment's prefix names, below the client.
+fn kind_from_prefix(prefix: &str) -> Option<Kind> {
+    Some(match prefix {
+        "process" => Kind::Process,
+        "session" => Kind::Session,
+        "turn" => Kind::Turn,
+        "agent" => Kind::Agent,
+        "request" => Kind::Request,
+        _ => return None,
+    })
 }
 
-impl Kind {
-    fn from_prefix(prefix: &str) -> Option<Kind> {
-        Some(match prefix {
-            "process" => Kind::Process,
-            "session" => Kind::Session,
-            "turn" => Kind::Turn,
-            "agent" => Kind::Agent,
-            "request" => Kind::Request,
-            _ => return None,
-        })
-    }
-
-    fn allows_child(self, child: Kind) -> bool {
-        use Kind::*;
-        matches!(
-            (self, child),
-            (Client, Process)
-                | (Client, Session)
-                | (Session, Turn)
-                | (Turn, Agent)
-                | (Turn, Request)
-                | (Agent, Agent)
-                | (Agent, Request)
-        )
-    }
-
-    fn is_work(self) -> bool {
-        matches!(self, Kind::Turn | Kind::Agent)
-    }
+fn allows_child(parent: Kind, child: Kind) -> bool {
+    use Kind::*;
+    matches!(
+        (parent, child),
+        (Client, Process)
+            | (Client, Session)
+            | (Session, Turn)
+            | (Turn, Agent)
+            | (Turn, Request)
+            | (Agent, Agent)
+            | (Agent, Request)
+    )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    NeedsInput,
-    Working,
-    Unknown,
-    Idle,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Outcome {
-    Ok,
-    Error,
-    Cancelled,
+fn is_work(kind: Kind) -> bool {
+    matches!(kind, Kind::Turn | Kind::Agent)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,39 +87,6 @@ pub struct Client {
     pub observes: Observes,
 }
 
-/// What a client lets Eywa see, published on its row so a consumer can tell
-/// "really idle" from "can't see this".
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct Observes {
-    pub agents: bool,
-    pub approvals: Attribution,
-    pub questions: bool,
-    pub mcp_input: bool,
-    pub interrupts: Detection,
-}
-
-/// Whom an approval request is attributed to.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Attribution {
-    /// The subagent or main thread that asked.
-    Actor,
-    /// Only the turn: the client doesn't say which subagent asked.
-    Turn,
-    /// Approvals aren't visible.
-    None,
-}
-
-/// How Eywa learns that the user interrupted a turn.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Detection {
-    /// The client reports it.
-    Hook,
-    /// Eywa infers it from what happens next.
-    Inferred,
-}
-
 /// Returns the kind of node a path names, or `None` if the path is malformed.
 pub fn kind_of(id: &str) -> Option<Kind> {
     if id == "/" {
@@ -163,8 +101,8 @@ pub fn kind_of(id: &str) -> Option<Kind> {
     let mut kind = Kind::Client;
     for segment in segments {
         let (prefix, name) = segment.split_once(':')?;
-        let child = Kind::from_prefix(prefix)?;
-        if name.is_empty() || !kind.allows_child(child) {
+        let child = kind_from_prefix(prefix)?;
+        if name.is_empty() || !allows_child(kind, child) {
             return None;
         }
         kind = child;
@@ -209,7 +147,7 @@ impl Node {
     }
 
     fn can_go_stale(&self) -> bool {
-        self.kind.is_work() || self.kind == Kind::Request
+        is_work(self.kind) || self.kind == Kind::Request
     }
 }
 
@@ -571,7 +509,7 @@ impl Tree {
             let category = match node.kind {
                 _ if node.is_unconfirmed() => 2,
                 Kind::Request => 0,
-                kind if kind.is_work() => 1,
+                kind if is_work(kind) => 1,
                 _ => continue,
             };
             let slot = &mut best[category];
