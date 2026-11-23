@@ -72,6 +72,40 @@ fn subscribers_see_who_needs_them() {
     );
 }
 
+/// Rows carry what the client names: the tool an approval is for, and a
+/// subagent's type, which reaches subscribers even when it arrives after the
+/// subagent's row.
+#[test]
+fn rows_name_the_tool_and_the_agent_type() {
+    let dir = temp_dir("names");
+    let _service = start(dir.path());
+    let mut watcher = connect(
+        dir.path(),
+        r#"{"v":1,"op":"subscribe","path":"/claude","depth":64}"#,
+    );
+    let agent = "/claude/session:s1/turn:p1/agent:a1";
+    let request = "/claude/session:s1/turn:p1/agent:a1/request:d1";
+    send(dir.path(), json!({"event": "UserPromptSubmit"}));
+    send(
+        dir.path(),
+        json!({"event": "PermissionRequest", "agent_id": "a1", "tool_name": "Bash", "digest": "d1"}),
+    );
+    let rows = wait_for_rows(&mut watcher, |rows| rows.contains_key(request));
+    assert_eq!(
+        rows[request]["attrs"],
+        json!({"reason": "approval", "tool_name": "Bash"})
+    );
+    assert_eq!(rows[agent]["attrs"], json!({}));
+
+    send(
+        dir.path(),
+        json!({"event": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
+    );
+    let rows = wait_for_rows(&mut watcher, |rows| rows.contains_key(agent));
+    assert_eq!(rows[agent]["attrs"], json!({"agent_type": "Explore"}));
+    assert_eq!(rows[agent]["state"], "needs_input");
+}
+
 #[test]
 fn silence_turns_work_unknown() {
     let dir = temp_dir("stale");

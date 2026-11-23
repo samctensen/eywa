@@ -4,9 +4,9 @@
 //! events carry its session id. The adapter maps each child to the root
 //! session that spawned it, flattening nested subagents under the root turn.
 //! Approvals arrive only as a "permission prompt" notification with no tool
-//! or turn id, so they attach to the turn.
+//! or turn id, so they attach to the turn and name no tool.
 
-use super::{Adapter, Reason, Sessions, Tracker, close, open_session, session_path};
+use super::{Adapter, Reason, Sessions, Tracker, close, name_attr, open_session, session_path};
 use crate::record::HookRecord;
 use crate::tree::{Attribution, Attrs, Client, Detection, Event, Millis, Observes, Outcome};
 use std::collections::{HashMap, HashSet};
@@ -93,7 +93,9 @@ fn handle_event(
 ) {
     // Tool events carry no prompt id, so the root actor works in the open turn.
     let actor = match child {
-        Some(child) => tracker.agent(child, None),
+        Some(child) => tracker
+            .agent(child, None)
+            .map(|actor| actor.typed(record.agent_type.as_deref())),
         None => tracker.root(record.turn_id.as_deref()),
     };
     let tool_use_id = record.tool_use_id.as_deref();
@@ -117,7 +119,8 @@ fn handle_event(
                 tracker.remember_call(actor, record.digest.as_deref(), tool_use_id);
                 match (record.tool_name.as_deref(), tool_use_id) {
                     (Some(tool), Some(id)) if QUESTION_TOOLS.contains(&tool) => {
-                        tracker.open_request(actor, id, Reason::Question, at, events);
+                        let about = name_attr("tool_name", Some(tool));
+                        tracker.open_request(actor, id, Reason::Question, about, at, events);
                     }
                     _ => tracker.enter(actor, events),
                 }
@@ -138,19 +141,23 @@ fn handle_event(
             }
         }
         "Notification" => match record.notification_type.as_deref() {
-            // Keyed by the newest call, so that call finishing answers it.
+            // Keyed by the newest call, so that call finishing answers it. That
+            // the prompt is for that call is a guess, so it names no tool.
             Some("permission_prompt") => {
                 if let Some(root) = tracker.root(None) {
                     let id = tracker.newest_call().unwrap_or_else(|| "approval".into());
-                    tracker.open_request(&root, &id, Reason::Approval, at, events);
+                    let about = Attrs::new();
+                    tracker.open_request(&root, &id, Reason::Approval, about, at, events);
                 }
             }
             Some("idle_prompt") => tracker.end_turn(None, Outcome::Cancelled, events),
             _ => {}
         },
+        // Not even a root's start is trusted to name the type, since the root
+        // may be a child Eywa never saw start. The child's records name it.
         "SubagentStart" => {
             if let Some(spawned) = &record.agent_id {
-                tracker.start_agent(spawned, None, events);
+                tracker.start_agent(spawned, None, None, events);
             }
         }
         "SubagentStop" => {

@@ -9,6 +9,7 @@ use eywa::adapter::grok::GrokAdapter;
 use eywa::adapter::muse::MuseAdapter;
 use eywa::record::HookRecord;
 use eywa::registry::{SessionState, Status};
+use eywa::row::Change;
 use eywa::tree::{Millis, STALE_AFTER, State, Tree};
 use serde_json::{Value, json};
 
@@ -54,6 +55,20 @@ fn muse(steps: &[Step]) -> Tree {
 
 fn last_outcome(tree: &Tree, session: &str) -> Value {
     tree.attrs(session).unwrap()["last_turn"]["outcome"].clone()
+}
+
+fn attrs(tree: &Tree, id: &str) -> Value {
+    Value::Object(tree.attrs(id).unwrap_or_else(|| panic!("no {id}")).clone())
+}
+
+/// A record from Grok child session `c1`, which carries no prompt id.
+fn grok_child(fields: Value) -> Value {
+    let mut record = json!({"session_id": "c1", "turn_id": null});
+    record
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    record
 }
 
 /// The design's first demonstration: the main turn ends while a subagent
@@ -553,4 +568,348 @@ fn muse_thread_approvals() {
     ]
     .concat();
     assert_eq!(muse(&granted).state("/muse"), Some(State::Working));
+}
+
+/// An approval or question names the tool it is for whenever the hook that
+/// opens it does.
+#[test]
+fn requests_name_their_tool() {
+    let asking = [
+        ("UserPromptSubmit", json!({})),
+        (
+            "PreToolUse",
+            json!({"tool_name": "Bash", "tool_use_id": "tu1", "digest": "d1"}),
+        ),
+        (
+            "PermissionRequest",
+            json!({"tool_name": "Bash", "digest": "d1"}),
+        ),
+    ];
+    let approval = json!({"reason": "approval", "tool_name": "Bash"});
+    for (client, tree) in [
+        ("claude", claude(&asking)),
+        ("codex", codex(&asking)),
+        ("muse", muse(&asking)),
+    ] {
+        let request = format!("/{client}/session:s1/turn:p1/request:tu1");
+        assert_eq!(attrs(&tree, &request), approval, "{client}");
+    }
+
+    // The approval's own hook names the tool, even when it is matched to a
+    // different call: Claude saw only the Read start, not the Bash one.
+    let t = claude(&[
+        ("UserPromptSubmit", json!({})),
+        (
+            "PreToolUse",
+            json!({"tool_name": "Read", "tool_use_id": "tu1", "digest": "d1"}),
+        ),
+        (
+            "PermissionRequest",
+            json!({"tool_name": "Bash", "digest": "d9"}),
+        ),
+    ]);
+    assert_eq!(
+        attrs(&t, "/claude/session:s1/turn:p1/request:tu1"),
+        approval
+    );
+
+    let ask = |tool: &str| {
+        [
+            ("UserPromptSubmit", json!({})),
+            (
+                "PreToolUse",
+                json!({"tool_name": tool, "tool_use_id": "tu5"}),
+            ),
+        ]
+    };
+    for (client, tool, tree) in [
+        ("claude", "AskUserQuestion", claude(&ask("AskUserQuestion"))),
+        (
+            "codex",
+            "request_user_input",
+            codex(&ask("request_user_input")),
+        ),
+        ("grok", "ask_user_question", grok(&ask("ask_user_question"))),
+    ] {
+        let request = format!("/{client}/session:s1/turn:p1/request:tu5");
+        let question = json!({"reason": "question", "tool_name": tool});
+        assert_eq!(attrs(&tree, &request), question, "{client}");
+    }
+}
+
+/// A request whose hook doesn't name its tool names none, even when Eywa
+/// knows a call it is likely for.
+#[test]
+fn requests_name_no_tool_they_were_not_told() {
+    let call = (
+        "PreToolUse",
+        json!({"tool_name": "Bash", "tool_use_id": "tu1", "digest": "d1"}),
+    );
+    let notified = [
+        ("UserPromptSubmit", json!({})),
+        call.clone(),
+        (
+            "Notification",
+            json!({"notification_type": "permission_prompt"}),
+        ),
+    ];
+    let approval = json!({"reason": "approval"});
+    // Grok keys its approval to the newest call, but the notification says
+    // nothing of which call it is for.
+    let t = grok(&notified);
+    assert_eq!(attrs(&t, "/grok/session:s1/turn:p1/request:tu1"), approval);
+    // Prompts no approval hook announced.
+    let t = claude(&notified);
+    assert_eq!(
+        attrs(&t, "/claude/session:s1/turn:p1/request:prompt"),
+        approval
+    );
+    let t = muse(&notified);
+    assert_eq!(
+        attrs(&t, "/muse/session:s1/turn:p1/request:prompt"),
+        approval
+    );
+
+    // Claude's session registry says it is waiting, not on which tool.
+    let mut adapter = ClaudeAdapter::new();
+    let mut t = Tree::new(&[adapter.client()], STALE_AFTER, 0);
+    feed(&mut t, &mut adapter, &("UserPromptSubmit", json!({})), 0);
+    feed(&mut t, &mut adapter, &call, 500);
+    let waiting = SessionState {
+        session_id: "s1".into(),
+        pid: 1,
+        status: Status::Waiting(Some("permission prompt".into())),
+        status_at: None,
+        cwd: None,
+        entrypoint: None,
+    };
+    for event in adapter.observe(&waiting, 1_000) {
+        t.apply(event, 1_000);
+    }
+    assert_eq!(
+        attrs(&t, "/claude/session:s1/turn:p1/request:waiting"),
+        approval
+    );
+}
+
+#[test]
+fn mcp_input_names_the_server_asking() {
+    let asked = |fields: Value| claude(&[("UserPromptSubmit", json!({})), ("Elicitation", fields)]);
+    let request = json!({"reason": "mcp_input", "mcp_server": "github"});
+    let t = asked(json!({"elicitation_id": "e1", "mcp_server": "github"}));
+    assert_eq!(attrs(&t, "/claude/session:s1/turn:p1/request:e1"), request);
+    let t = asked(json!({"mcp_server": "github"}));
+    assert_eq!(
+        attrs(&t, "/claude/session:s1/turn:p1/request:mcp-github"),
+        request
+    );
+    let t = asked(json!({"elicitation_id": "e1"}));
+    assert_eq!(
+        attrs(&t, "/claude/session:s1/turn:p1/request:e1"),
+        json!({"reason": "mcp_input"})
+    );
+}
+
+/// An agent row names the subagent's type once the client does, and keeps it
+/// when the subagent runs again. Only hooks that name the agent's own type
+/// count: Claude's start, every Codex record from inside the subagent, and a
+/// Grok child's own records. Muse names none Eywa can use.
+#[test]
+fn agents_name_their_type() {
+    let agent = |client: &str| format!("/{client}/session:s1/turn:p1/agent:a1");
+    let explore = json!({"agent_type": "Explore"});
+    let untyped = json!({});
+
+    let started = [
+        ("UserPromptSubmit", json!({})),
+        (
+            "SubagentStart",
+            json!({"agent_id": "a1", "agent_type": "Explore"}),
+        ),
+    ];
+    assert_eq!(attrs(&claude(&started), &agent("claude")), explore);
+    assert_eq!(attrs(&codex(&started), &agent("codex")), explore);
+    // Stopped, then running again without a new start.
+    let again = [
+        started.as_slice(),
+        &[
+            ("SubagentStop", json!({"agent_id": "a1", "agent_type": ""})),
+            ("UserPromptSubmit", json!({"agent_id": "a1"})),
+        ],
+    ]
+    .concat();
+    assert_eq!(attrs(&codex(&again), &agent("codex")), explore);
+    let again = [
+        started.as_slice(),
+        &[
+            ("SubagentStop", json!({"agent_id": "a1", "agent_type": ""})),
+            (
+                "PreToolUse",
+                json!({"agent_id": "a1", "tool_use_id": "tu1"}),
+            ),
+        ],
+    ]
+    .concat();
+    assert_eq!(attrs(&claude(&again), &agent("claude")), explore);
+
+    // Seen first through its activity, as after a restart.
+    let active = [
+        ("UserPromptSubmit", json!({})),
+        (
+            "PermissionRequest",
+            json!({"agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "digest": "d1"}),
+        ),
+    ];
+    let t = codex(&active);
+    assert_eq!(attrs(&t, &agent("codex")), explore);
+    assert_eq!(
+        attrs(&t, &format!("{}/request:d1", agent("codex"))),
+        json!({"reason": "approval", "tool_name": "Bash"})
+    );
+    assert_eq!(
+        attrs(&claude(&active), &agent("claude")),
+        untyped,
+        "only Claude's start names the agent's own type"
+    );
+
+    // A Grok start doesn't say for certain whose type it names; the child's
+    // own records do.
+    let spawned = [
+        ("UserPromptSubmit", json!({})),
+        (
+            "SubagentStart",
+            json!({"agent_id": "c1", "agent_type": "explore"}),
+        ),
+    ];
+    let child = "/grok/session:s1/turn:p1/agent:c1";
+    assert_eq!(attrs(&grok(&spawned), child), untyped);
+    let prompted = [
+        spawned.as_slice(),
+        &[(
+            "UserPromptSubmit",
+            grok_child(json!({"agent_type": "explore"})),
+        )],
+    ]
+    .concat();
+    assert_eq!(
+        attrs(&grok(&prompted), child),
+        json!({"agent_type": "explore"})
+    );
+
+    let t = muse(&[
+        ("UserPromptSubmit", json!({})),
+        ("SubagentStart", json!({"agent_id": "a1"})),
+        (
+            "PreToolUse",
+            json!({"agent_id": "a1", "agent_type": "worker", "tool_use_id": "tu1"}),
+        ),
+    ]);
+    assert_eq!(attrs(&t, &agent("muse")), untyped);
+}
+
+/// Two approvals can land on one request, when the second matches no call of
+/// its own. The row names the tool asked about last, and only its own actor's.
+#[test]
+fn a_later_approval_on_the_same_request_names_its_tool() {
+    let asked_twice = [
+        ("UserPromptSubmit", json!({})),
+        (
+            "PreToolUse",
+            json!({"tool_name": "Bash", "tool_use_id": "tu1", "digest": "d1"}),
+        ),
+        (
+            "PermissionRequest",
+            json!({"tool_name": "Bash", "digest": "d1"}),
+        ),
+        (
+            "PermissionRequest",
+            json!({"tool_name": "apply_patch", "digest": "d7"}),
+        ),
+    ];
+    for (client, tree) in [
+        ("claude", claude(&asked_twice)),
+        ("codex", codex(&asked_twice)),
+        ("muse", muse(&asked_twice)),
+    ] {
+        assert_eq!(
+            attrs(&tree, &format!("/{client}/session:s1/turn:p1/request:tu1")),
+            json!({"reason": "approval", "tool_name": "apply_patch"}),
+            "{client}"
+        );
+    }
+
+    // With no digest and no call to match, the main thread's approval and a
+    // subagent's share one request id. The subagent's tool isn't the turn's.
+    let t = codex(&[
+        ("UserPromptSubmit", json!({})),
+        ("PermissionRequest", json!({"tool_name": "Bash"})),
+        ("SubagentStart", json!({"agent_id": "a1"})),
+        (
+            "PermissionRequest",
+            json!({"agent_id": "a1", "tool_name": "apply_patch"}),
+        ),
+    ]);
+    assert_eq!(
+        attrs(&t, "/codex/session:s1/turn:p1/request:approval"),
+        json!({"reason": "approval", "tool_name": "Bash"})
+    );
+}
+
+/// A Grok child that starts a subagent of its own keeps its own type, and
+/// the start names no type for the agent it spawns.
+#[test]
+fn a_grok_childs_start_types_neither_agent() {
+    let t = grok(&[
+        ("UserPromptSubmit", json!({})),
+        ("SubagentStart", json!({"agent_id": "c1"})),
+        (
+            "UserPromptSubmit",
+            grok_child(json!({"agent_type": "explore"})),
+        ),
+        (
+            "SubagentStart",
+            grok_child(json!({"agent_id": "c2", "agent_type": "plan"})),
+        ),
+    ]);
+    assert_eq!(
+        attrs(&t, "/grok/session:s1/turn:p1/agent:c1"),
+        json!({"agent_type": "explore"})
+    );
+    assert_eq!(attrs(&t, "/grok/session:s1/turn:p1/agent:c2"), json!({}));
+}
+
+/// A type named after its agent opened reaches subscribers as one upsert of
+/// that row, and hearing it again publishes nothing.
+#[test]
+fn a_type_named_later_is_published_once() {
+    let mut adapter = GrokAdapter::new();
+    let mut tree = Tree::new(&[adapter.client()], STALE_AFTER, 0);
+    let steps = [
+        ("UserPromptSubmit", json!({})),
+        ("SubagentStart", json!({"agent_id": "c1"})),
+        (
+            "UserPromptSubmit",
+            grok_child(json!({"agent_type": "explore"})),
+        ),
+        (
+            "PreToolUse",
+            grok_child(
+                json!({"agent_type": "explore", "tool_name": "read_file", "tool_use_id": "tu1"}),
+            ),
+        ),
+    ];
+    let mut changes = Vec::new();
+    for (n, step) in steps.iter().enumerate() {
+        feed(&mut tree, &mut adapter, step, n as Millis * 1000);
+        changes.push(tree.take_changes());
+    }
+    let agent = "/grok/session:s1/turn:p1/agent:c1";
+    match changes[2].as_slice() {
+        [Change::Upsert(row)] => {
+            assert_eq!(row.id, agent);
+            assert_eq!(row.attrs["agent_type"], "explore");
+        }
+        other => panic!("expected one upsert: {other:?}"),
+    }
+    assert_eq!(changes[3], [], "nothing changed");
 }

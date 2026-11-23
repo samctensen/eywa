@@ -6,7 +6,7 @@
 //! turn, which never becomes a root turn.
 
 use super::claude::approval_id;
-use super::{Adapter, Reason, Sessions, Tracker, close, open_session, session_path};
+use super::{Adapter, Reason, Sessions, Tracker, close, name_attr, open_session, session_path};
 use crate::record::HookRecord;
 use crate::tree::{Attribution, Attrs, Client, Detection, Event, Millis, Observes, Outcome};
 
@@ -60,8 +60,11 @@ impl Adapter for CodexAdapter {
 
 fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: &mut Vec<Event>) {
     let in_subagent = record.agent_id.is_some();
+    // Every record from inside a subagent names its type.
     let actor = match &record.agent_id {
-        Some(agent) => tracker.agent(agent, None),
+        Some(agent) => tracker
+            .agent(agent, None)
+            .map(|actor| actor.typed(record.agent_type.as_deref())),
         None => tracker.root(record.turn_id.as_deref()),
     };
     let tool_use_id = record.tool_use_id.as_deref();
@@ -82,8 +85,9 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
                 tracker.answer_approvals(actor, at, events);
                 tracker.remember_call(actor, record.digest.as_deref(), tool_use_id);
                 match (record.tool_name.as_deref(), tool_use_id) {
-                    (Some("request_user_input"), Some(id)) => {
-                        tracker.open_request(actor, id, Reason::Question, at, events);
+                    (Some(tool @ "request_user_input"), Some(id)) => {
+                        let about = name_attr("tool_name", Some(tool));
+                        tracker.open_request(actor, id, Reason::Question, about, at, events);
                     }
                     _ => tracker.enter(actor, events),
                 }
@@ -92,7 +96,8 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
         "PermissionRequest" => {
             if let Some(actor) = &actor {
                 let id = approval_id(tracker, actor, record);
-                tracker.open_request(actor, &id, Reason::Approval, at, events);
+                let about = name_attr("tool_name", record.tool_name.as_deref());
+                tracker.open_request(actor, &id, Reason::Approval, about, at, events);
             }
         }
         // Fires only when the tool succeeds.
@@ -112,7 +117,7 @@ fn handle_event(tracker: &mut Tracker, record: &HookRecord, at: Millis, events: 
         // `turn_id` its own events carry.
         "SubagentStart" => {
             if let Some(agent) = &record.agent_id {
-                tracker.start_agent(agent, None, events);
+                tracker.start_agent(agent, None, record.agent_type.as_deref(), events);
             }
         }
         // Fires after each of the subagent's turns; it can run again.
