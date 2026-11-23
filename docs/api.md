@@ -417,6 +417,37 @@ export interface Observes {
 }
 ```
 
+### Rust
+
+The [`eywa-api`](../eywa-api) crate has the same types for Rust. They are the
+types Eywa itself writes the API with, and they depend only on `serde` and
+`serde_json`. Pin a commit:
+
+```toml
+[dependencies]
+eywa-api = { git = "https://github.com/samctensen/eywa", rev = "<commit>" }
+serde_json = "1"
+```
+
+Decode each line as a `Message`:
+
+```rust
+use eywa_api::Message;
+
+match serde_json::from_str::<Message>(&line)? {
+    Message::Snapshot { rows, .. } => { /* replace every row with `rows` */ }
+    Message::Upsert { row, .. } => { /* replace the row with `row.id` */ }
+    Message::Remove { id, .. } => { /* drop the row with `id` */ }
+    _ => {} // `error`, `stopping`, or a type from a newer Eywa
+}
+```
+
+`Request::subscribe(path, depth)` and `Request::requests()` build the request,
+and `default_dir().join(API_SOCKET)` is the socket. Every enum has an `Other`
+variant that holds values from a newer Eywa, `Message::Other` stands for a
+message type this version doesn't know, and `Attrs::other` keeps the
+attributes it doesn't name.
+
 ## Examples
 
 ### Python
