@@ -56,11 +56,20 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 name = "eywa"
 version = "0.3.0"
 dependencies = [
+ "eywa-api",
  "humantime",
  "libc",
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "eywa-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
